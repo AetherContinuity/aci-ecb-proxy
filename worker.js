@@ -1,36 +1,37 @@
-// ACI ECB/FRED Proxy — v1.3
-// Finland + Germany 10Y yields via FRED/OECD + FI-DE spread
-// v1.3: added browser User-Agent to avoid FRED 520 block
+// ACI Bond Yield Proxy — v2.0
+// Lähde: Eurostat API (irt_lt_mcby_m)
+// FI + DE 10Y valtionlainakorot + FI-DE spread
+// WP-017: Parliamentary Decision Latency & Market Signal Correlation
 
-const SERIES = {
-  'FI10Y': 'IRLTLT01FIM156N',
-  'DE10Y': 'IRLTLT01DEM156N',
-};
-
-const FRED_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv';
+const EUROSTAT_BASE = 'https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/irt_lt_mcby_m';
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS' };
-const HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (compatible; ACI-Research-Bot/1.0)',
-  'Accept': 'text/csv,text/plain,*/*',
-  'Referer': 'https://fred.stlouisfed.org/',
-};
 
-function parseFredCsv(csv) {
-  const result = {};
-  for (const line of csv.trim().split('\n').slice(1)) {
-    const i = line.indexOf(',');
-    if (i < 0) continue;
-    const date = line.slice(0, i).trim();
-    const val  = parseFloat(line.slice(i + 1).trim());
-    if (!isNaN(val)) result[date] = val;
+async function fetchEurostat(geo, startPeriod, endPeriod) {
+  const params = new URLSearchParams({
+    geo,
+    intrt: 'IRT_LT_MCY10',  // 10-year maturity, central government bonds
+    format: 'JSON',
+    lang: 'EN',
+    sinceTimePeriod: startPeriod.replace('-', '-'),
+    untilTimePeriod: endPeriod.replace('-', '-'),
+  });
+
+  const url = `${EUROSTAT_BASE}?${params}`;
+  const r = await fetch(url, { headers: { 'Accept': 'application/json' } });
+  if (!r.ok) throw new Error(`Eurostat ${geo}: ${r.status}`);
+
+  const json = await r.json();
+
+  // Eurostat JSON-stat format: dimension.time.category.index + values
+  const timeIndex = json.dimension?.time?.category?.index || {};
+  const values    = json.value || {};
+
+  const data = {};
+  for (const [period, idx] of Object.entries(timeIndex)) {
+    const val = values[String(idx)];
+    if (val != null) data[period] = val;
   }
-  return result;
-}
-
-async function fetchOne(fredId) {
-  const r = await fetch(`${FRED_BASE}?id=${fredId}`, { headers: HEADERS });
-  if (!r.ok) throw new Error(`FRED ${fredId}: ${r.status}`);
-  return parseFredCsv(await r.text());
+  return data;
 }
 
 export default {
@@ -39,33 +40,43 @@ export default {
 
     const url    = new URL(request.url);
     const series = url.searchParams.get('series') || 'FI10Y';
-    const start  = url.searchParams.get('start')  || '2023-01-01';
-    const end    = url.searchParams.get('end')    || '2026-12-31';
+    const start  = url.searchParams.get('start')  || '2023-01';
+    const end    = url.searchParams.get('end')    || new Date().toISOString().slice(0, 7);
 
     try {
-      if (series === 'SPREAD') {
-        const [fi, de] = await Promise.all([fetchOne(SERIES.FI10Y), fetchOne(SERIES.DE10Y)]);
-        const data = Object.keys(fi)
-          .filter(d => de[d] != null && d >= start && d <= end)
-          .sort()
-          .map(d => ({ date: d, fi: fi[d], de: de[d], spread: +(fi[d] - de[d]).toFixed(4) }));
-        return Response.json({ series: 'FI-DE-SPREAD', start, end,
-          fetched: new Date().toISOString(), count: data.length, data },
-          { headers: CORS });
+      if (series === 'FI10Y' || series === 'DE10Y') {
+        const geo = series === 'FI10Y' ? 'FI' : 'DE';
+        const map = await fetchEurostat(geo, start, end);
+        const data = Object.keys(map).sort()
+          .map(d => ({ date: d, value: map[d] }));
+        return Response.json({
+          series, geo, start, end,
+          source: 'Eurostat irt_lt_mcby_m',
+          fetched: new Date().toISOString(),
+          count: data.length, data
+        }, { headers: CORS });
       }
 
-      if (!SERIES[series]) return Response.json(
+      if (series === 'SPREAD') {
+        const [fi, de] = await Promise.all([
+          fetchEurostat('FI', start, end),
+          fetchEurostat('DE', start, end),
+        ]);
+        const data = Object.keys(fi)
+          .filter(d => de[d] != null)
+          .sort()
+          .map(d => ({ date: d, fi: fi[d], de: de[d], spread: +(fi[d] - de[d]).toFixed(4) }));
+        return Response.json({
+          series: 'FI-DE-SPREAD', start, end,
+          source: 'Eurostat irt_lt_mcby_m',
+          fetched: new Date().toISOString(),
+          count: data.length, data
+        }, { headers: CORS });
+      }
+
+      return Response.json(
         { error: 'Unknown series. Use: FI10Y, DE10Y, SPREAD' },
         { status: 400, headers: CORS });
-
-      const map  = await fetchOne(SERIES[series]);
-      const data = Object.keys(map)
-        .filter(d => d >= start && d <= end)
-        .sort()
-        .map(d => ({ date: d, value: map[d] }));
-      return Response.json({ series, fredId: SERIES[series], start, end,
-        fetched: new Date().toISOString(), count: data.length, data },
-        { headers: CORS });
 
     } catch(e) {
       return Response.json({ error: e.message, series }, { status: 500, headers: CORS });
