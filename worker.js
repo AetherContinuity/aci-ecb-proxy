@@ -1,30 +1,34 @@
-// ACI ECB/FRED Proxy — v1.2
+// ACI ECB/FRED Proxy — v1.3
 // Finland + Germany 10Y yields via FRED/OECD + FI-DE spread
+// v1.3: added browser User-Agent to avoid FRED 520 block
 
 const SERIES = {
   'FI10Y': 'IRLTLT01FIM156N',
   'DE10Y': 'IRLTLT01DEM156N',
 };
+
 const FRED_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv';
 const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET, OPTIONS' };
+const HEADERS = {
+  'User-Agent': 'Mozilla/5.0 (compatible; ACI-Research-Bot/1.0)',
+  'Accept': 'text/csv,text/plain,*/*',
+  'Referer': 'https://fred.stlouisfed.org/',
+};
 
 function parseFredCsv(csv) {
-  // Returns {date: value} map — skips "." missing values
   const result = {};
-  const lines = csv.trim().split('\n').slice(1);
-  for (const line of lines) {
-    const comma = line.indexOf(',');
-    if (comma < 0) continue;
-    const date = line.slice(0, comma).trim();
-    const raw  = line.slice(comma + 1).trim();
-    const val  = parseFloat(raw);
+  for (const line of csv.trim().split('\n').slice(1)) {
+    const i = line.indexOf(',');
+    if (i < 0) continue;
+    const date = line.slice(0, i).trim();
+    const val  = parseFloat(line.slice(i + 1).trim());
     if (!isNaN(val)) result[date] = val;
   }
   return result;
 }
 
 async function fetchOne(fredId) {
-  const r = await fetch(`${FRED_BASE}?id=${fredId}`);
+  const r = await fetch(`${FRED_BASE}?id=${fredId}`, { headers: HEADERS });
   if (!r.ok) throw new Error(`FRED ${fredId}: ${r.status}`);
   return parseFredCsv(await r.text());
 }
@@ -51,7 +55,7 @@ export default {
       }
 
       if (!SERIES[series]) return Response.json(
-        { error: `Unknown series. Use: FI10Y, DE10Y, SPREAD` },
+        { error: 'Unknown series. Use: FI10Y, DE10Y, SPREAD' },
         { status: 400, headers: CORS });
 
       const map  = await fetchOne(SERIES[series]);
