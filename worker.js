@@ -1,18 +1,17 @@
-// ACI ECB Proxy — v1.0
-// Proxaa ECB SDW REST API:n WP-016 datan hakuun
-// Sallitut sarjat: FI 10Y korko, DE 10Y korko, FI-DE spread
+// ACI ECB/FRED Proxy — v1.1
+// Hakee Suomen ja Saksan 10Y valtionlainakorot FRED:stä (OECD-data)
+// Laskee myös FI-DE spreadin WP-017 analyysia varten
 
-const ALLOWED_SERIES = new Set([
-  'IRS.M.FI.L.L40.CI.0.EUR.N.Z',   // Suomi 10Y kuukausittainen
-  'IRS.M.DE.L.L40.CI.0.EUR.N.Z',   // Saksa 10Y kuukausittainen
-  'IRS.M.FI.L.L40.CI.0.EUR.N.Z,IRS.M.DE.L.L40.CI.0.EUR.N.Z', // molemmat
-]);
+const SERIES = {
+  'FI10Y': 'IRLTLT01FIM156N',  // Finland 10Y (OECD via FRED)
+  'DE10Y': 'IRLTLT01DEM156N',  // Germany 10Y (OECD via FRED)
+};
 
-const ECB_BASE = 'https://sdw-wsrest.ecb.europa.eu/service/data';
+const FRED_BASE = 'https://fred.stlouisfed.org/graph/fredgraph.csv';
+
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Methods': 'GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
 };
 
 export default {
@@ -22,65 +21,43 @@ export default {
     }
 
     const url = new URL(request.url);
-    const series = url.searchParams.get('series');
-    const start  = url.searchParams.get('start')  || '2024-01';
-    const end    = url.searchParams.get('end')    || new Date().toISOString().slice(0,7);
+    const series = url.searchParams.get('series') || 'FI10Y';
+    const start  = url.searchParams.get('start')  || '2024-01-01';
+    const end    = url.searchParams.get('end')    || new Date().toISOString().slice(0,10);
 
-    if (!series) {
-      return Response.json({ error: 'series parameter required' },
-        { status: 400, headers: CORS });
+    // Hae spread: molemmat sarjat
+    if (series === 'SPREAD') {
+      return await fetchSpread(start, end);
     }
 
-    if (!ALLOWED_SERIES.has(series)) {
-      return Response.json({ error: `Series not allowed: ${series}` },
-        { status: 403, headers: CORS });
+    if (!SERIES[series]) {
+      return Response.json(
+        { error: `Unknown series: ${series}. Use FI10Y, DE10Y, or SPREAD` },
+        { status: 400, headers: CORS }
+      );
     }
 
-    const ecbUrl = `${ECB_BASE}/${series}?format=jsondata&startPeriod=${start}&endPeriod=${end}&detail=dataonly`;
+    const fredId = SERIES[series];
+    const fredUrl = `${FRED_BASE}?id=${fredId}&vintage_date=${end}`;
 
     try {
-      const resp = await fetch(ecbUrl, {
-        headers: { 'Accept': 'application/json' }
-      });
+      const resp = await fetch(fredUrl);
+      if (!resp.ok) throw new Error(`FRED error: ${resp.status}`);
 
-      if (!resp.ok) {
-        return Response.json(
-          { error: `ECB API error: ${resp.status}`, series },
-          { status: resp.status, headers: CORS }
-        );
-      }
-
-      const data = await resp.json();
-
-      // Muodosta yksinkertainen taulukko datasta
-      const datasets = data.dataSets?.[0]?.series;
-      const timevals = data.structure?.dimensions?.observation?.[0]?.values;
-
-      if (!datasets || !timevals) {
-        return Response.json({ error: 'Unexpected ECB response format', raw: data },
-          { status: 502, headers: CORS });
-      }
-
-      // Rakenna yksinkertainen [{date, value}] muoto
-      const results = {};
-      for (const [seriesKey, seriesData] of Object.entries(datasets)) {
-        const obs = seriesData.observations || {};
-        const points = Object.entries(obs).map(([idx, vals]) => ({
-          date:  timevals[parseInt(idx)]?.id,
-          value: vals[0]
-        })).filter(p => p.date && p.value != null);
-        results[seriesKey] = points;
-      }
+      const csv = await resp.text();
+      const lines = csv.trim().split('\n').slice(1); // ohita header
+      const data = lines
+        .map(l => { const [d,v] = l.split(','); return { date: d, value: parseFloat(v) }; })
+        .filter(r => r.date >= start && r.date <= end && !isNaN(r.value));
 
       return Response.json({
-        series,
-        start,
-        end,
+        series, fredId, start, end,
         fetched: new Date().toISOString(),
-        data: results
+        count: data.length,
+        data
       }, { headers: { ...CORS, 'Content-Type': 'application/json' } });
 
-    } catch (e) {
+    } catch(e) {
       return Response.json(
         { error: e.message, series },
         { status: 500, headers: CORS }
@@ -88,3 +65,37 @@ export default {
     }
   }
 };
+
+async function fetchSpread(start, end) {
+  try {
+    const [rFI, rDE] = await Promise.all([
+      fetch(`${FRED_BASE}?id=${SERIES.FI10Y}`).then(r => r.text()),
+      fetch(`${FRED_BASE}?id=${SERIES.DE10Y}`).then(r => r.text()),
+    ]);
+
+    const parse = csv => Object.fromEntries(
+      csv.trim().split('\n').slice(1)
+        .map(l => l.split(','))
+        .filter(([d,v]) => v && !isNaN(v))
+        .map(([d,v]) => [d, parseFloat(v)])
+    );
+
+    const fi = parse(rFI);
+    const de = parse(rDE);
+
+    const data = Object.keys(fi)
+      .filter(d => d >= start && d <= end && de[d] != null)
+      .map(d => ({ date: d, fi: fi[d], de: de[d], spread: +(fi[d] - de[d]).toFixed(4) }))
+      .sort((a,b) => a.date.localeCompare(b.date));
+
+    return Response.json({
+      series: 'FI-DE-SPREAD', start, end,
+      fetched: new Date().toISOString(),
+      count: data.length,
+      data
+    }, { headers: { ...CORS, 'Content-Type': 'application/json' } });
+
+  } catch(e) {
+    return Response.json({ error: e.message }, { status: 500, headers: CORS });
+  }
+}
