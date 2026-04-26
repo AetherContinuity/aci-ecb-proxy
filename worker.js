@@ -1,7 +1,8 @@
-// ACI Bond Yield + Debt Proxy — v3.0
+// ACI Bond Yield + Debt + Budget Proxy — v3.1
 // Sources:
 //   Eurostat irt_lt_mcby_m — 10Y sovereign yields
-//   Valtiokonttori API — Finnish central government debt data
+//   Valtiokonttori central-government-debt API (CC BY 4.0)
+//   Valtiokonttori valtiontalous API — budget accounting (CC BY 4.0)
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -9,7 +10,8 @@ const CORS = {
 };
 
 const EUROSTAT_BASE = 'https://ec.europa.eu/eurostat/api/dissemination/statistics/1.0/data/irt_lt_mcby_m';
-const VK_BASE = 'https://api.tutkihallintoa.fi/central-government-debt/v1';
+const VK_DEBT_BASE  = 'https://api.tutkihallintoa.fi/central-government-debt/v1';
+const VK_BUDGET_BASE = 'https://api.tutkihallintoa.fi/valtiontalous/v1';
 
 const GEO = { FI10Y:'FI', DE10Y:'DE', SE10Y:'SE', DK10Y:'DK' };
 
@@ -22,8 +24,7 @@ async function fetchGeo(geo, start, end) {
   const vals = j.value || {};
   const out = {};
   for (const [period, idx] of Object.entries(timeIdx)) {
-    const v = vals[String(idx)];
-    if (v != null) out[period] = v;
+    const v = vals[String(idx)]; if (v != null) out[period] = v;
   }
   return out;
 }
@@ -31,107 +32,109 @@ async function fetchGeo(geo, start, end) {
 async function calcSpread(g1, g2, label, start, end) {
   const [a, b] = await Promise.all([fetchGeo(g1,start,end), fetchGeo(g2,start,end)]);
   const data = Object.keys(a).filter(d => b[d]!=null).sort()
-    .map(d => ({
-      date: d,
-      [g1.toLowerCase()]: a[d],
-      [g2.toLowerCase()]: b[d],
-      spread: +(a[d]-b[d]).toFixed(4)
-    }));
-  return { series: label, start, end,
-    source: 'Eurostat irt_lt_mcby_m',
-    fetched: new Date().toISOString(),
-    count: data.length, data };
+    .map(d => ({ date:d, [g1.toLowerCase()]:a[d], [g2.toLowerCase()]:b[d], spread:+(a[d]-b[d]).toFixed(4) }));
+  return { series:label, start, end, source:'Eurostat irt_lt_mcby_m', fetched:new Date().toISOString(), count:data.length, data };
 }
 
-async function fetchVK(endpoint, lang='EN') {
-  const url = `${VK_BASE}/${endpoint}?lang=${lang}`;
-  const r = await fetch(url, { headers: { Accept: 'application/json' } });
-  if (!r.ok) throw new Error(`Valtiokonttori ${endpoint}: ${r.status}`);
+async function fetchVKDebt(endpoint, lang='EN') {
+  const r = await fetch(`${VK_DEBT_BASE}/${endpoint}?lang=${lang}`, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`VK-Debt ${endpoint}: ${r.status}`);
   return r.json();
 }
+
+async function fetchVKBudget(params) {
+  const qs = new URLSearchParams(params).toString();
+  const r = await fetch(`${VK_BUDGET_BASE}/budjettitaloudentapahtumat?${qs}`, { headers: { Accept: 'text/csv' } });
+  if (!r.ok) throw new Error(`VK-Budget: ${r.status}`);
+  const csv = await r.text();
+  // Parse CSV to JSON
+  const lines = csv.split('\n').filter(l => l.trim());
+  if (lines.length < 2) return [];
+  const headers = lines[0].split(';').map(h => h.trim().replace(/^"|"$/g,''));
+  return lines.slice(1).map(line => {
+    const vals = line.split(';').map(v => v.trim().replace(/^"|"$/g,''));
+    return Object.fromEntries(headers.map((h,i) => [h, vals[i]]));
+  }).filter(r => Object.values(r).some(v => v));
+}
+
+const VK_DEBT_ENDPOINTS = {
+  'VK-INTEREST':       'interest-expenses',
+  'VK-SENSITIVITY':    'interest-rate-sensitivity',
+  'VK-DEBT-SERIES':    'monthly-debt-time-series',
+  'VK-DEBT-GDP':       'debt-and-gdp',
+  'VK-STRUCTURE':      'structure-of-debt',
+  'VK-REDEMPTIONS':    'redemptions-net-borrowing',
+  'VK-REALIZED':       'realized-borrowing',
+  'VK-EMTN':           'emtn-bond-issues',
+  'VK-BORROWING-PLAN': 'borrowing-plan',
+  'VK-LIQUID':         'liquid-cash-funds',
+  'VK-EFFECTIVE-COST': 'effective-cost-of-debt',
+  'VK-SERIAL':         'serial-bond-issues',
+};
 
 export default {
   async fetch(req) {
     if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
     const u = new URL(req.url);
-    const series = u.searchParams.get('series') || 'FI10Y';
-    const start  = u.searchParams.get('start')  || '2020-01';
-    const end    = u.searchParams.get('end')    || new Date().toISOString().slice(0,7);
-    const lang   = u.searchParams.get('lang')   || 'EN';
+    const series  = u.searchParams.get('series')  || 'FI10Y';
+    const start   = u.searchParams.get('start')   || '2020-01';
+    const end     = u.searchParams.get('end')     || new Date().toISOString().slice(0,7);
+    const lang    = u.searchParams.get('lang')    || 'EN';
 
     try {
-      // Valtiokonttori debt data endpoints
-      const vkEndpoints = {
-        'VK-INTEREST': 'interest-expenses',
-        'VK-SENSITIVITY': 'interest-rate-sensitivity',
-        'VK-DEBT-SERIES': 'monthly-debt-time-series',
-        'VK-DEBT-GDP': 'debt-and-gdp',
-        'VK-STRUCTURE': 'structure-of-debt',
-        'VK-REDEMPTIONS': 'redemptions-net-borrowing',
-        'VK-REALIZED': 'realized-borrowing',
-        'VK-EMTN': 'emtn-bond-issues',
-        'VK-BORROWING-PLAN': 'borrowing-plan',
-        'VK-LIQUID': 'liquid-cash-funds',
-        'VK-EFFECTIVE-COST': 'effective-cost-of-debt',
-        'VK-SERIAL': 'serial-bond-issues',
-      };
-
-      if (vkEndpoints[series]) {
-        const data = await fetchVK(vkEndpoints[series], lang);
-        return Response.json({
-          series,
-          endpoint: vkEndpoints[series],
-          source: 'Valtiokonttori / State Treasury Finland',
-          fetched: new Date().toISOString(),
-          data
-        }, { headers: CORS });
+      // Valtiokonttori DEBT API
+      if (VK_DEBT_ENDPOINTS[series]) {
+        const data = await fetchVKDebt(VK_DEBT_ENDPOINTS[series], lang);
+        return Response.json({ series, source:'Valtiokonttori State Treasury Finland',
+          fetched:new Date().toISOString(), data }, { headers:CORS });
       }
 
-      // Single country yields
+      // Valtiokonttori BUDGET API — interest expenses pääluokka 36
+      if (series === 'VT-INTEREST') {
+        const yearFrom = u.searchParams.get('yearFrom') || '2020';
+        const yearTo   = u.searchParams.get('yearTo')   || '2025';
+        const data = await fetchVKBudget({ paaluokka:'36', yearFrom, yearTo });
+        return Response.json({ series, description:'State debt interest payments (pääluokka 36)',
+          source:'Valtiokonttori valtiontalous API', fetched:new Date().toISOString(),
+          yearFrom, yearTo, count:data.length, data }, { headers:CORS });
+      }
+
+      // Eurostat yields
       if (GEO[series]) {
         const map = await fetchGeo(GEO[series], start, end);
         const data = Object.keys(map).sort().map(d => ({ date:d, value:map[d] }));
         return Response.json({ series, geo:GEO[series], start, end,
-          source:'Eurostat irt_lt_mcby_m',
-          fetched:new Date().toISOString(),
+          source:'Eurostat irt_lt_mcby_m', fetched:new Date().toISOString(),
           count:data.length, data }, { headers:CORS });
       }
 
       // Spreads
-      const spreadMap = {
-        'SPREAD': ['FI','DE','FI-DE-SPREAD'],
-        'FI-DE':  ['FI','DE','FI-DE-SPREAD'],
-        'FI-SE':  ['FI','SE','FI-SE-SPREAD'],
-        'FI-DK':  ['FI','DK','FI-DK-SPREAD'],
-        'DE-SE':  ['DE','SE','DE-SE-SPREAD'],
-      };
-      if (spreadMap[series]) {
-        const [g1,g2,label] = spreadMap[series];
-        return Response.json(await calcSpread(g1,g2,label,start,end), { headers:CORS });
+      const sm = { 'SPREAD':['FI','DE','FI-DE'], 'FI-DE':['FI','DE','FI-DE'],
+                   'FI-SE':['FI','SE','FI-SE'], 'FI-DK':['FI','DK','FI-DK'] };
+      if (sm[series]) {
+        const [g1,g2,l] = sm[series];
+        return Response.json(await calcSpread(g1,g2,l+'-SPREAD',start,end), { headers:CORS });
       }
 
-      // ALL spreads
       if (series === 'ALL') {
         const [fide,fise,fidk] = await Promise.all([
           calcSpread('FI','DE','FI-DE-SPREAD',start,end),
           calcSpread('FI','SE','FI-SE-SPREAD',start,end),
           calcSpread('FI','DK','FI-DK-SPREAD',start,end),
         ]);
-        return Response.json({
-          fetched: new Date().toISOString(), start, end,
-          'FI-DE': fide.data, 'FI-SE': fise.data, 'FI-DK': fidk.data,
-        }, { headers:CORS });
+        return Response.json({ fetched:new Date().toISOString(), start, end,
+          'FI-DE':fide.data, 'FI-SE':fise.data, 'FI-DK':fidk.data }, { headers:CORS });
       }
 
-      return Response.json({
-        error: 'Available series:',
-        yields: ['FI10Y','DE10Y','SE10Y','DK10Y'],
-        spreads: ['FI-DE','FI-SE','FI-DK','ALL'],
-        valtiokonttori: Object.keys(vkEndpoints)
+      return Response.json({ error:'Available series:',
+        yields:['FI10Y','DE10Y','SE10Y','DK10Y'],
+        spreads:['FI-DE','FI-SE','FI-DK','ALL'],
+        vk_debt:Object.keys(VK_DEBT_ENDPOINTS),
+        vk_budget:['VT-INTEREST (add ?yearFrom=2020&yearTo=2025)']
       }, { status:400, headers:CORS });
 
     } catch(e) {
-      return Response.json({ error: e.message, series }, { status:500, headers:CORS });
+      return Response.json({ error:e.message, series }, { status:500, headers:CORS });
     }
   }
 };
