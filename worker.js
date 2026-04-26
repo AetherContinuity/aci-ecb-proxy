@@ -45,7 +45,7 @@ async function fetchVKDebt(endpoint, lang='EN') {
 async function fetchVKBudget(params) {
   const qs = new URLSearchParams(params).toString();
   const r = await fetch(`${VK_BUDGET_BASE}/budjettitaloudentapahtumat?${qs}`, { headers: { Accept: 'text/csv' } });
-  if (!r.ok) throw new Error(`VK-Budget: ${r.status}`);
+  if (!r.ok) return [];
   const csv = await r.text();
   // Parse CSV to JSON
   const lines = csv.split('\n').filter(l => l.trim());
@@ -93,8 +93,12 @@ export default {
       if (series === 'VT-INTEREST') {
         const yearFrom = u.searchParams.get('yearFrom') || '2020';
         const yearTo   = u.searchParams.get('yearTo')   || '2025';
-        const data = await fetchVKBudget({ paaluokka:'36', yearFrom, yearTo });
-        return Response.json({ series, description:'State debt interest payments (pääluokka 36)',
+        // Try paaluokka=36 first, fallback to luku=3602 (Valtionvelan korot)
+        let data = await fetchVKBudget({ paaluokka:'36', yearFrom, yearTo });
+        if (!data || data.length === 0) {
+          data = await fetchVKBudget({ luku:'3602', yearFrom, yearTo });
+        }
+        return Response.json({ series, description:'State debt interest payments (paaluokka 36 / luku 3602)',
           source:'Valtiokonttori valtiontalous API', fetched:new Date().toISOString(),
           yearFrom, yearTo, count:data.length, data }, { headers:CORS });
       }
