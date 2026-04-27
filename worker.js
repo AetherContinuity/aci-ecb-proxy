@@ -72,6 +72,62 @@ const VK_DEBT_ENDPOINTS = {
   'VK-SERIAL':         'serial-bond-issues',
 };
 
+const EDK_BASE = 'https://api.eduskunta.fi/api/v1';
+
+async function fetchVNS82025() {
+  const q = JSON.stringify({
+    category: 'valtiopaivaasia',
+    maxResults: 1,
+    startFromIndex: 0,
+    expression: { and: [{ property: 'eduskuntatunnus', match: 'VNS 8/2025' }] }
+  });
+  const url = `${EDK_BASE}/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`EDK API: ${r.status}`);
+  const j = await r.json();
+  const asia = j.results?.[0]?.valtiopaivaasia;
+  if (!asia) throw new Error('VNS 8/2025 not found');
+
+  // Extract key fields
+  const tila = asia.tila?.fi || 'tuntematon';
+  const kasittelyt = asia.kasittelyt?.fi || [];
+  const asiakirjat = asia.keskeisetAsiakirjat?.fi || [];
+
+  // Find TaVM if published
+  const tavm = asiakirjat.find(a => a.asiakirjatyyppikoodi === 'TaVM');
+  const lausunnot = asiakirjat.filter(a => a.asiakirjatyyppikoodi?.endsWith('VL'));
+
+  // Latest processing stage
+  const viimeisin = asia.viimeisinKasittelyvaihe?.fi || 'ei tietoa';
+
+  return {
+    series: 'EDK-VNS82025',
+    source: 'Parliament of Finland Open Data API',
+    fetched: new Date().toISOString(),
+    eduskuntatunnus: 'VNS 8/2025 vp',
+    nimeke: asia.nimeke?.fi || '',
+    tila,
+    viimeisinKasittelyvaihe: viimeisin,
+    tavm_julkaistu: !!tavm,
+    tavm: tavm ? {
+      edktunnus: tavm.edktunnus,
+      laadintapvm: tavm.laadintapvm,
+      nimeketeksti: tavm.nimeketeksti,
+      htmlSaatavilla: tavm.htmlSaatavilla
+    } : null,
+    lausunnot: lausunnot.map(l => ({
+      valiokunta: l.valiokuntanimi,
+      edktunnus: l.edktunnus,
+      laadintapvm: l.laadintapvm
+    })),
+    kasittelyvaiheetLkm: kasittelyt.length,
+    viimeisinKasittely: kasittelyt[kasittelyt.length - 1] ? {
+      tapahtumapvm: kasittelyt[kasittelyt.length - 1].tapahtumapvm,
+      kasittelyvaihe: kasittelyt[kasittelyt.length - 1].kasittelyvaihe
+    } : null
+  };
+}
+
 export default {
   async fetch(req) {
     if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
@@ -82,6 +138,12 @@ export default {
     const lang    = u.searchParams.get('lang')    || 'EN';
 
     try {
+      // Eduskunta API — VNS 8/2025 käsittelyseuranta
+      if (series === 'EDK-VNS82025') {
+        const data = await fetchVNS82025();
+        return Response.json(data, { headers: CORS });
+      }
+
       // Valtiokonttori DEBT API
       if (VK_DEBT_ENDPOINTS[series]) {
         const data = await fetchVKDebt(VK_DEBT_ENDPOINTS[series], lang);
@@ -134,7 +196,8 @@ export default {
         yields:['FI10Y','DE10Y','SE10Y','DK10Y'],
         spreads:['FI-DE','FI-SE','FI-DK','ALL'],
         vk_debt:Object.keys(VK_DEBT_ENDPOINTS),
-        vk_budget:['VT-INTEREST (add ?yearFrom=2020&yearTo=2025)']
+        vk_budget:['VT-INTEREST (add ?yearFrom=2020&yearTo=2025)'],
+        eduskunta:['EDK-VNS82025 — VNS 8/2025 käsittelyseuranta, TaVM-status']
       }, { status:400, headers:CORS });
 
     } catch(e) {
