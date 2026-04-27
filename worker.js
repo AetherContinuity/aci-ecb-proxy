@@ -73,6 +73,29 @@ const VK_DEBT_ENDPOINTS = {
 };
 
 const EDK_BASE = 'https://api.eduskunta.fi/api/v1';
+const FINGRID_BASE = 'https://data.fingrid.fi/api/datasets';
+
+// EPP = dataset 242 (Ennakoitu poikkeuspoisto)
+async function fetchFingridEPP() {
+  const now = new Date();
+  const start = new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString();
+  const end = new Date(now.getTime() + 24 * 60 * 60 * 1000).toISOString();
+  const url = `${FINGRID_BASE}/242/data?startTime=${start}&endTime=${end}&format=json&pageSize=5&sortBy=startTime&sortOrder=desc`;
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`Fingrid EPP: ${r.status}`);
+  const j = await r.json();
+  const rows = j.data || j.rows || [];
+  const latest = rows[0];
+  return {
+    series: 'FINGRID-EPP',
+    source: 'Fingrid Open Data — dataset 242 (Ennakoitu poikkeuspoisto)',
+    fetched: now.toISOString(),
+    value: latest?.value ?? 0,
+    startTime: latest?.startTime,
+    endTime: latest?.endTime,
+    data: rows.slice(0, 5)
+  };
+}
 
 async function fetchVNS82025() {
   const q = JSON.stringify({
@@ -138,6 +161,12 @@ export default {
     const lang    = u.searchParams.get('lang')    || 'EN';
 
     try {
+      // Fingrid EPP
+      if (series === 'FINGRID-EPP') {
+        const data = await fetchFingridEPP();
+        return Response.json(data, { headers: CORS });
+      }
+
       // Eduskunta API — VNS 8/2025 käsittelyseuranta
       if (series === 'EDK-VNS82025') {
         const data = await fetchVNS82025();
