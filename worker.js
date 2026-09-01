@@ -1,8 +1,10 @@
-// ACI Bond Yield + Debt + Budget Proxy — v3.1
+// ACI Bond Yield + Debt + Budget Proxy — v3.2
 // Sources:
 //   Eurostat irt_lt_mcby_m — 10Y sovereign yields
 //   Valtiokonttori central-government-debt API (CC BY 4.0)
 //   Valtiokonttori valtiontalous API — budget accounting (CC BY 4.0)
+//   ECB Data Portal (SDMX 2.1)
+//   Bank of Finland / FIN-FSA Open Data — Timeseries API (CC BY 4.0)
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
@@ -173,6 +175,48 @@ async function fetchECBStructure(flow) {
   };
 }
 
+// ─────────────────────────────────────────────────────────────
+// Bank of Finland / FIN-FSA Open Data — Timeseries API
+// Passthrough: ?bof=<DATASET>.<seriesName>&bofStart=YYYY-MM-DD&bofEnd=YYYY-MM-DD
+// Discovery:   ?bofdatasets=1  |  ?bofstruct=<DATASET>
+// No API key required. Docs: https://www.suomenpankki.fi/en/statistics/open-data/
+// ─────────────────────────────────────────────────────────────
+const BOF_BASE = 'https://api.boffsaopendata.fi/v3/api';
+
+async function fetchBoF(datasetSeriesKey, { start, end } = {}) {
+  const dot = datasetSeriesKey.indexOf('.');
+  if (dot === -1) throw new Error(`BoF key must be "<DATASET>.<seriesName>", e.g. MFI_PUBL.M.A.0...  got: ${datasetSeriesKey}`);
+  const dataset = datasetSeriesKey.slice(0, dot);
+  const seriesName = datasetSeriesKey.slice(dot + 1);
+  const qs = new URLSearchParams({ seriesName });
+  if (start) qs.set('startPeriod', start);
+  if (end)   qs.set('endPeriod', end);
+  const url = `${BOF_BASE}/Observations/${dataset}?${qs}`;
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`BoF ${dataset}: ${r.status}`);
+  const j = await r.json();
+  return {
+    requested: datasetSeriesKey, upstream: url,
+    source: 'Bank of Finland / FIN-FSA Open Data (Timeseries API)',
+    fetched: new Date().toISOString(),
+    data: j
+  };
+}
+
+async function fetchBoFDatasets() {
+  const url = `${BOF_BASE}/Datasets`;
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`BoF datasets: ${r.status}`);
+  return { source: 'Bank of Finland / FIN-FSA Open Data (Timeseries API)', fetched: new Date().toISOString(), datasets: await r.json() };
+}
+
+async function fetchBoFStructure(dataset) {
+  const url = `${BOF_BASE}/Structures/${dataset}`;
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`BoF structure ${dataset}: ${r.status}`);
+  return { dataset, fetched: new Date().toISOString(), structure: await r.json() };
+}
+
 // EPP = dataset 242 (Ennakoitu poikkeuspoisto)
 async function fetchFingridEPP() {
   const now = new Date();
@@ -297,6 +341,22 @@ export default {
         }, { headers: CORS });
       }
 
+      // ── Bank of Finland / FIN-FSA ──────────────────────────
+      const bofDatasets = u.searchParams.get('bofdatasets');
+      if (bofDatasets) {
+        return Response.json(await fetchBoFDatasets(), { headers: CORS });
+      }
+      const bofStruct = u.searchParams.get('bofstruct');
+      if (bofStruct) {
+        return Response.json(await fetchBoFStructure(bofStruct), { headers: CORS });
+      }
+      const bofKey = u.searchParams.get('bof');
+      if (bofKey) {
+        const bofStart = u.searchParams.get('bofStart');
+        const bofEnd   = u.searchParams.get('bofEnd');
+        return Response.json(await fetchBoF(bofKey, { start: bofStart, end: bofEnd }), { headers: CORS });
+      }
+
       // Fingrid EPP
       if (series === 'FINGRID-EPP') {
         const data = await fetchFingridEPP();
@@ -368,6 +428,8 @@ export default {
         ecb_bundles:['ECB-INFLATION','ECB-RATES'],
         ecb_passthrough:'?ecb=<full.sdmx.series.key>  e.g. ?ecb=HICP.M.U2.N.000000.4D0.ANR&last=24',
         ecb_discovery:'?struct=HICP  |  ?struct=FM  — lists dimension codes',
+        bof_passthrough:'?bof=<DATASET>.<seriesName>&bofStart=YYYY-MM-DD&bofEnd=YYYY-MM-DD  e.g. ?bof=MFI_PUBL.M.A.0.A.A20.A.A.U6.2251.ZZ.Z01.H.A.0.A.0.A.0',
+        bof_discovery:'?bofdatasets=1  — lists datasets  |  ?bofstruct=MFI_PUBL  — lists series/dimensions for a dataset',
         vk_debt:Object.keys(VK_DEBT_ENDPOINTS),
         vk_budget:['VT-INTEREST (add ?yearFrom=2020&yearTo=2025)'],
         eduskunta:['EDK-VNS82025 — VNS 8/2025 käsittelyseuranta, TaVM-status']
