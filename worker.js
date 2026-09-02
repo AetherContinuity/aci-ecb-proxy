@@ -176,12 +176,17 @@ async function fetchECBStructure(flow) {
 }
 
 // ─────────────────────────────────────────────────────────────
-// Bank of Finland / FIN-FSA Open Data — Timeseries API
+// Bank of Finland / FIN-FSA Open Data — Timeseries API v4
 // Passthrough: ?bof=<DATASET>.<seriesName>&bofStart=YYYY-MM-DD&bofEnd=YYYY-MM-DD
 // Discovery:   ?bofdatasets=1  |  ?bofstruct=<DATASET>
+//              ?bofseries=<DATASET>&pageSize=&page=   — lists valid seriesName values
 // No API key required. Docs: https://www.suomenpankki.fi/en/statistics/open-data/
+//
+// v4 base has NO /api segment (v3/api 404s outright — v3 is gone, not just
+// deprecated), and every path segment is lowercase: datasets, structures,
+// observations, series. Confirmed against the live API 2026-09-02.
 // ─────────────────────────────────────────────────────────────
-const BOF_BASE = 'https://api.boffsaopendata.fi/v3/api';
+const BOF_BASE = 'https://api.boffsaopendata.fi/v4';
 
 async function fetchBoF(datasetSeriesKey, { start, end } = {}) {
   const dot = datasetSeriesKey.indexOf('.');
@@ -191,7 +196,7 @@ async function fetchBoF(datasetSeriesKey, { start, end } = {}) {
   const qs = new URLSearchParams({ seriesName });
   if (start) qs.set('startPeriod', start);
   if (end)   qs.set('endPeriod', end);
-  const url = `${BOF_BASE}/Observations/${dataset}?${qs}`;
+  const url = `${BOF_BASE}/observations/${dataset}?${qs}`;
   const r = await fetch(url, { headers: { Accept: 'application/json' } });
   if (!r.ok) throw new Error(`BoF ${dataset}: ${r.status}`);
   const j = await r.json();
@@ -204,17 +209,31 @@ async function fetchBoF(datasetSeriesKey, { start, end } = {}) {
 }
 
 async function fetchBoFDatasets() {
-  const url = `${BOF_BASE}/Datasets`;
+  const url = `${BOF_BASE}/datasets`;
   const r = await fetch(url, { headers: { Accept: 'application/json' } });
   if (!r.ok) throw new Error(`BoF datasets: ${r.status}`);
   return { source: 'Bank of Finland / FIN-FSA Open Data (Timeseries API)', fetched: new Date().toISOString(), datasets: await r.json() };
 }
 
 async function fetchBoFStructure(dataset) {
-  const url = `${BOF_BASE}/Structures/${dataset}`;
+  const url = `${BOF_BASE}/structures/${dataset}`;
   const r = await fetch(url, { headers: { Accept: 'application/json' } });
   if (!r.ok) throw new Error(`BoF structure ${dataset}: ${r.status}`);
   return { dataset, fetched: new Date().toISOString(), structure: await r.json() };
+}
+
+// Series listing — a distinct resource from Observations. This is how you
+// discover valid seriesName values for a dataset before calling ?bof=; the
+// old v3 code had no equivalent at all.
+async function fetchBoFSeries(dataset, { pageSize, page } = {}) {
+  const qs = new URLSearchParams();
+  if (pageSize) qs.set('pageSize', pageSize);
+  if (page)     qs.set('page', page);
+  const q = qs.toString();
+  const url = `${BOF_BASE}/series/${dataset}${q ? '?' + q : ''}`;
+  const r = await fetch(url, { headers: { Accept: 'application/json' } });
+  if (!r.ok) throw new Error(`BoF series ${dataset}: ${r.status}`);
+  return { dataset, upstream: url, fetched: new Date().toISOString(), series: await r.json() };
 }
 
 // EPP = dataset 242 (Ennakoitu poikkeuspoisto)
@@ -350,6 +369,12 @@ export default {
       if (bofStruct) {
         return Response.json(await fetchBoFStructure(bofStruct), { headers: CORS });
       }
+      const bofSeries = u.searchParams.get('bofseries');
+      if (bofSeries) {
+        const pageSize = u.searchParams.get('pageSize');
+        const page     = u.searchParams.get('page');
+        return Response.json(await fetchBoFSeries(bofSeries, { pageSize, page }), { headers: CORS });
+      }
       const bofKey = u.searchParams.get('bof');
       if (bofKey) {
         const bofStart = u.searchParams.get('bofStart');
@@ -429,7 +454,7 @@ export default {
         ecb_passthrough:'?ecb=<full.sdmx.series.key>  e.g. ?ecb=HICP.M.U2.N.000000.4D0.ANR&last=24',
         ecb_discovery:'?struct=HICP  |  ?struct=FM  — lists dimension codes',
         bof_passthrough:'?bof=<DATASET>.<seriesName>&bofStart=YYYY-MM-DD&bofEnd=YYYY-MM-DD  e.g. ?bof=MFI_PUBL.M.A.0.A.A20.A.A.U6.2251.ZZ.Z01.H.A.0.A.0.A.0',
-        bof_discovery:'?bofdatasets=1  — lists datasets  |  ?bofstruct=MFI_PUBL  — lists series/dimensions for a dataset',
+        bof_discovery:'?bofdatasets=1  — lists datasets  |  ?bofstruct=MFI_PUBL  — lists series/dimensions for a dataset  |  ?bofseries=MFI_PUBL&pageSize=50&page=0  — lists valid seriesName values for a dataset',
         vk_debt:Object.keys(VK_DEBT_ENDPOINTS),
         vk_budget:['VT-INTEREST (add ?yearFrom=2020&yearTo=2025)'],
         eduskunta:['EDK-VNS82025 — VNS 8/2025 käsittelyseuranta, TaVM-status']
