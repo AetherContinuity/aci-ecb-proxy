@@ -5,4 +5,5 @@
 ?struct=HICP                      → listaa dimensiokoodit
 ?bofdatasets=1                    → Suomen Pankin datasetit
 ?bofstruct=MFI_PUBL                → dataset MFI_PUBL:n sarjat/dimensiot
+?bofseries=MFI_PUBL&pageSize=50&page=0  → dataset MFI_PUBL:n kelvolliset seriesName-arvot
 ?bof=MFI_PUBL.M.A.0.A.A20.A.A.U6.2251.ZZ.Z01.H.A.0.A.0.A.0&bofStart=2020-01-01
