@@ -17,6 +17,26 @@ const UA_CSV = 'curl/8.5.0';
 const VK_BUDGET_BASE = 'https://api.tutkihallintoa.fi/valtiontalous/v1';
 
 const GEO = { FI10Y:'FI', DE10Y:'DE', SE10Y:'SE', DK10Y:'DK' };
+const SPREAD_MAP = { 'SPREAD':['FI','DE','FI-DE'], 'FI-DE':['FI','DE','FI-DE'],
+                     'FI-SE':['FI','SE','FI-SE'], 'FI-DK':['FI','DK','FI-DK'] };
+
+// Cache TTL per upstream family — matches each source's own update cadence,
+// not one blanket number. Fingrid EPP moves every 15 min; Eurostat/ECB/BoF
+// are daily-to-monthly series; Valtiokonttori and Eduskunta change rarely
+// within a session. Returns null (no caching) for unmatched/error routes.
+function ttlFor(u) {
+  const series = u.searchParams.get('series') || 'FI10Y';
+  if (series === 'FINGRID-EPP') return 300; // 5 min
+  if (u.searchParams.get('ecb') || u.searchParams.get('struct') ||
+      ECB_ALIAS[series] || series === 'ECB-INFLATION' || series === 'ECB-RATES') return 43200; // 12h
+  if (u.searchParams.get('bofdatasets') || u.searchParams.get('bofstruct') ||
+      u.searchParams.get('bofseries') || u.searchParams.get('bof')) return 43200; // 12h
+  if (series === 'EDK-VNS82025') return 21600; // 6h — process tracking, like Hankeikkuna
+  if (u.searchParams.get('vkapi') || u.searchParams.get('vkdebt') || u.searchParams.get('vk') ||
+      VK_DEBT_ENDPOINTS[series] || series === 'VT-INTEREST') return 86400; // 24h
+  if (GEO[series] || SPREAD_MAP[series] || series === 'ALL') return 43200; // 12h — Eurostat
+  return null;
+}
 
 async function fetchGeo(geo, start, end) {
   const url = `${EUROSTAT_BASE}?format=JSON&lang=EN&geo=${geo}&sinceTimePeriod=${start}&untilTimePeriod=${end}`;
@@ -328,9 +348,7 @@ async function fetchVNS82025() {
   };
 }
 
-export default {
-  async fetch(req) {
-    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
+async function route(req) {
     const u = new URL(req.url);
     const series  = u.searchParams.get('series')  || 'FI10Y';
     const start   = u.searchParams.get('start')   || '2020-01';
@@ -528,10 +546,8 @@ export default {
       }
 
       // Spreads
-      const sm = { 'SPREAD':['FI','DE','FI-DE'], 'FI-DE':['FI','DE','FI-DE'],
-                   'FI-SE':['FI','SE','FI-SE'], 'FI-DK':['FI','DK','FI-DK'] };
-      if (sm[series]) {
-        const [g1,g2,l] = sm[series];
+      if (SPREAD_MAP[series]) {
+        const [g1,g2,l] = SPREAD_MAP[series];
         return Response.json(await calcSpread(g1,g2,l+'-SPREAD',start,end), { headers:CORS });
       }
 
@@ -566,5 +582,29 @@ export default {
     } catch(e) {
       return Response.json({ error:e.message, series }, { status:500, headers:CORS });
     }
+}
+
+export default {
+  async fetch(req, env, ctx) {
+    if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
+
+    const cache = caches.default;
+    if (req.method === 'GET') {
+      const hit = await cache.match(req);
+      if (hit) return hit;
+    }
+
+    const res = await route(req);
+
+    if (req.method === 'GET' && res.status === 200) {
+      const ttl = ttlFor(new URL(req.url));
+      if (ttl) {
+        const cached = new Response(res.body, res);
+        cached.headers.set('Cache-Control', `public, max-age=${ttl}`);
+        ctx.waitUntil(cache.put(req, cached.clone()));
+        return cached;
+      }
+    }
+    return res;
   }
 };

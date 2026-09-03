@@ -116,6 +116,25 @@ koodimuutosta.
 Long- and short-term debt · Market and nominal value · Redemptions of
 central government debt · Secondary market · Treasury bill issues.
 
+## Välimuisti
+
+Cloudflare Cache API, `caches.default`. Ei vaadi KV:tä tai muuta ostettua
+tallennustilaa — ilmainen reunavälimuisti riittää GET-vastausten
+uudelleenkäyttöön. TTL on porrastettu lähteen päivitystaajuuden mukaan,
+ei yhtenä lukuna:
+
+| Lähde | TTL |
+|---|---|
+| Fingrid EPP | 5 min |
+| ECB, Suomen Pankki | 12 h |
+| Eurostat (tuotot, spreadit) | 12 h |
+| Valtiokonttori | 24 h |
+| Eduskunta (VNS-seuranta) | 6 h |
+
+Vain onnistuneet (200) GET-vastaukset välimuistiin; virhevastauksia (400/500)
+ei koskaan. Kun kaksi kävijää lataa saman dashboardin peräkkäin TTL:n
+sisällä, ylävirtaan menee yksi kutsu kymmenen sijaan.
+
 ## Suunnitteluperiaate
 
 Jokaisessa perheessä on raaka passthrough nimettyjen aliasten rinnalla.
