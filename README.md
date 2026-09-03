@@ -118,9 +118,15 @@ central government debt · Secondary market · Treasury bill issues.
 
 ## Välimuisti
 
-Cloudflare Cache API, `caches.default`. Ei vaadi KV:tä tai muuta ostettua
-tallennustilaa — ilmainen reunavälimuisti riittää GET-vastausten
-uudelleenkäyttöön. TTL on porrastettu lähteen päivitystaajuuden mukaan,
+**Ei Cache API:a** (`caches.default`) — se ei toimi workers.dev-osoitteissa,
+koska se on vyöhyketasoinen ja olisi jaettu kaikkien workers.dev-käyttäjien
+kesken. Sen sijaan **Workers Cache** (heinäkuu 2026): `wrangler.toml`
+sisältää `[cache]\nenabled = true`, ja worker vain palauttaa
+`Cache-Control`-otsikon — Cloudflare tarkistaa välimuistin ennen workerin
+ajoa eikä worker edes käynnisty osumalla. Sisältää request collapsingin:
+kun monta pyyntöä samalle avaimelle saapuu ennen ensimmäistä vastausta,
+worker ajetaan kertaalleen. Ei vaadi KV:tä eikä muuta ostettua
+tallennustilaa. TTL on porrastettu lähteen päivitystaajuuden mukaan,
 ei yhtenä lukuna:
 
 | Lähde | TTL |

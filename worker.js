@@ -584,26 +584,19 @@ async function route(req) {
     }
 }
 
+// Ei Cache API:a (caches.default) — se ei toimi workers.dev-osoitteissa,
+// koska välimuisti olisi vyöhyketasoinen ja jaettu kaikkien workers.dev-
+// käyttäjien kesken. Sen sijaan Workers Cache: Cache-Control-otsikko
+// riittää, kunhan wrangler.toml:ssa on [cache] enabled = true.
 export default {
-  async fetch(req, env, ctx) {
+  async fetch(req) {
     if (req.method === 'OPTIONS') return new Response(null, { headers: CORS });
-
-    const cache = caches.default;
-    if (req.method === 'GET') {
-      const hit = await cache.match(req);
-      if (hit) return hit;
-    }
 
     const res = await route(req);
 
     if (req.method === 'GET' && res.status === 200) {
       const ttl = ttlFor(new URL(req.url));
-      if (ttl) {
-        const cached = new Response(res.body, res);
-        cached.headers.set('Cache-Control', `public, max-age=${ttl}`);
-        ctx.waitUntil(cache.put(req, cached.clone()));
-        return cached;
-      }
+      if (ttl) res.headers.set('Cache-Control', `public, max-age=${ttl}`);
     }
     return res;
   }
