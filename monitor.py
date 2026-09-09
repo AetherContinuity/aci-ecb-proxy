@@ -103,39 +103,79 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-BASE_URL = "https://aci-ecb-proxy.ruotsalainen-marko.workers.dev"
+ECB_BASE_URL = "https://aci-ecb-proxy.ruotsalainen-marko.workers.dev"
 UA = {"User-Agent": "aci-ecb-proxy-monitor/0.1"}
 
 HERE = Path(__file__).resolve().parent
 STATE_FILE = HERE / "monitor" / "state.json"
 LOG_FILE = HERE / "monitor" / "log.ndjson"
 
-# Six canaries, one per upstream family documented in README.md, using
-# only routes given there as concrete worked examples — no invented
-# series keys (Suomen Pankki is excluded for exactly that reason: no
-# safe example key is given, and a wrong seriesName is a silent trap
-# per the README's own warnings).
+
+def _fingrid_epp_path() -> str:
+    """Sliding 6h window, not a fixed timestamp.
+
+    A fixed start/end freezes: every run after the window has fully
+    passed would keep returning the same cached answer forever,
+    reading as `unchanged` for the wrong reason (a frozen request, not
+    a stable series) — the exact confusion this file exists to avoid
+    causing, this time in its own canary's argument rather than the
+    upstream's data.
+    """
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"/api?ds=192&start={start}&end={end}&size=5"
+
+
+def _eduskunta_asia_path() -> str:
+    # The value contains a literal "/" that MUST be percent-encoded
+    # (%2F) — this is the same trap the ?votes= route taught: a raw
+    # slash does not work. urllib.parse.quote's default `safe='/'`
+    # would leave it unescaped, so safe='' is required here.
+    asia = urllib.parse.quote("HE 101/2024", safe="")
+    return f"/?asia={asia}"
+
+
+# Eight canaries. Six live on aci-ecb-proxy, one per upstream family
+# documented in README.md, using only routes given there as concrete
+# worked examples — no invented series keys (Suomen Pankki is excluded
+# for exactly that reason: no safe example key is given, and a wrong
+# seriesName is a silent trap per the README's own warnings). Two live
+# on the proxies that actually own that data: Fingrid's real datasets
+# and Eduskunta's case search are NOT re-exposed as generic passthroughs
+# on aci-ecb-proxy (its FINGRID-EPP and EDK-VNS82025 routes are each
+# hardcoded to one specific dataset/case — that's what broke on the
+# first run), and adding generic ?ds=/?asia= passthroughs here instead
+# would just make this proxy a second, competing owner of the same
+# upstream — the isolation this whole system relies on argues against
+# that as strongly as it argues for twelve separate proxies in the
+# first place. A canary that points at the wrong service is a worse
+# bug than a canary that points at the right one in another repo.
 #
 # max_silence_hint is informational only (see module docstring) —
 # not measured yet, not enforced.
 CANARIES = [
-    {"key": "eurostat-fi10y", "path": "/?series=FI10Y",
+    {"key": "eurostat-fi10y", "base": ECB_BASE_URL, "path": "/?series=FI10Y",
      "max_silence_hint": "monthly series — unmeasured"},
-    {"key": "ecb-dfr", "path": "/?series=ECB-DFR",
+    {"key": "ecb-dfr", "base": ECB_BASE_URL, "path": "/?series=ECB-DFR",
      "max_silence_hint": "step series, changes only on ECB decision dates — long silence is normal"},
-    {"key": "vk-debt-interest", "path": "/?series=VK-INTEREST",
+    {"key": "vk-debt-interest", "base": ECB_BASE_URL, "path": "/?series=VK-INTEREST",
      "max_silence_hint": "unmeasured"},
-    {"key": "vk-budget-interest", "path": "/?series=VT-INTEREST&yearFrom=2024&yearTo=2026",
+    {"key": "vk-budget-interest", "base": ECB_BASE_URL,
+     "path": "/?series=VT-INTEREST&yearFrom=2024&yearTo=2026",
      "max_silence_hint": "unmeasured"},
-    {"key": "fingrid-epp", "path": "/?series=FINGRID-EPP",
-     "max_silence_hint": "5 min cache TTL upstream — should move within hours"},
-    {"key": "eduskunta-vns8", "path": "/?series=EDK-VNS82025",
-     "max_silence_hint": "process tracking — silence is normal between sessions"},
+    {"key": "fingrid-ds192", "base": "https://aci-fingrid-proxy.ruotsalainen-marko.workers.dev",
+     "build_path": _fingrid_epp_path,
+     "max_silence_hint": "should move within hours; sliding 6h window, never frozen"},
+    {"key": "eduskunta-asia", "base": "https://aci-policy-proxy.ruotsalainen-marko.workers.dev",
+     "build_path": _eduskunta_asia_path,
+     "max_silence_hint": "single case's processing history — silence is normal for long stretches"},
 ]
 
 
@@ -226,33 +266,33 @@ def _get(url: str) -> tuple[int | None, bytes]:
         return None, str(e).encode("utf-8")
 
 
-def _proxy_reachable() -> bool:
-    """Probe the Worker itself, independent of any single canary route.
+def _proxy_reachable(base: str) -> bool:
+    """Probe the HOST a canary lives on, independent of that canary's
+    own path being correct.
 
-    worker.js answers ANY unrecognized query with a 400 + JSON help
-    body (see its final `route()` branch) rather than a network-level
-    failure — so a nonsense query is a safe, harmless way to ask "is
-    the Worker up at all" without depending on any canary's own path
-    staying valid. Getting parseable JSON back (whatever the status)
-    means the Worker answered; only a None status (DNS/timeout/connection
-    failure) or a non-JSON body means it didn't.
+    Deliberately does NOT require any particular response shape or
+    status code — canaries now live on three different Workers
+    (aci-ecb-proxy, aci-fingrid-proxy, aci-policy-proxy), each with its
+    own routing (aci-ecb-proxy answers unknown queries at `/` with a
+    JSON help body; aci-fingrid-proxy's real routes are under `/api`,
+    a fact learned the hard way for the canary path itself and not
+    worth re-assuming for a probe path too). Any HTTP response at all —
+    200, 400, 404, whatever — means the Worker is up and answering;
+    only a None status (DNS failure, timeout, connection refused) means
+    the host itself is down. This is intentionally the weakest possible
+    check for exactly that reason: it needs no knowledge of any proxy's
+    internal routes, so it can't itself become another guessed path.
 
-    This is a hint for `likely_cause`, not a verdict: the Worker being
-    reachable doesn't prove a given canary's specific upstream call
-    would succeed, only that the failure isn't "the whole proxy is
-    down". Telling "this route is wrong" apart from "this route is
-    right but its own upstream is down" needs knowing the route is
-    correct in the first place — exactly the fact that was missing for
-    fingrid-epp and eduskunta-vns8.
+    This is a hint for `likely_cause`, not a verdict: the host
+    responding to HTTP doesn't prove a given canary's specific route or
+    its upstream call would succeed, only that the failure isn't "the
+    whole service is down". Telling "this route is wrong" apart from
+    "this route is right but its own upstream is down" needs knowing
+    the route is correct in the first place — exactly the fact that was
+    missing for fingrid-epp and eduskunta-vns8 before this fix.
     """
-    status, raw = _get(BASE_URL + "/?__monitor_reachability_probe=1")
-    if status is None:
-        return False
-    try:
-        json.loads(raw.decode("utf-8"))
-        return True
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return False
+    status, _ = _get(base + "/__monitor_reachability_probe__")
+    return status is not None
 
 
 def _now_iso() -> str:
@@ -270,19 +310,21 @@ def run() -> int:
     now = _now_iso()
     log_lines: list[str] = []
     had_error = False
-    reachable: bool | None = None  # computed lazily, at most once per run
+    reachable_cache: dict[str, bool] = {}  # per host, at most one probe each per run
 
     for c in CANARIES:
         key = c["key"]
-        url = BASE_URL + c["path"]
+        base = c["base"]
+        path = c["build_path"]() if "build_path" in c else c["path"]
+        url = base + path
         status, raw = _get(url)
         prev = state.get(key)
 
         if status != 200:
             had_error = True
-            if reachable is None:
-                reachable = _proxy_reachable()
-            likely_cause = "canary_route" if reachable else "proxy_down"
+            if base not in reachable_cache:
+                reachable_cache[base] = _proxy_reachable(base)
+            likely_cause = "canary_route" if reachable_cache[base] else "proxy_down"
             entry = {"checked_at": now, "key": key, "event": "error",
                       "http_status": status, "detail": raw[:300].decode("utf-8", "replace"),
                       "likely_cause": likely_cause}
