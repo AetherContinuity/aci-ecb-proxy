@@ -96,18 +96,49 @@ This is a hint, not a verdict — see `_proxy_reachable`'s docstring.
 A THIRD cause looks identical to both of those at first: entsoe's
 day-ahead route timed out at 30s on the first real run against all
 nine proxies, with the reachability probe answering fine (so not
-proxy_down) — but the route wasn't wrong either. ENTSOE's Transparency
-Platform is just slow; the identical request took 26.1s on a retry
-with a 90s budget. A timeout (specifically — not a definitive error
-status like the 401/403 above) is retried exactly once at double the
-configured timeout before being called an error at all. If the retry
-succeeds, this run's data is used normally (still classified as one of
-the four states above) with `upstream_slow: true` noted alongside —
-it was slow, not broken, so it isn't logged as an error. Only if the
-retry ALSO fails does it fall through to the canary_route/proxy_down
-probe above, now with `retried: true` so it's visible a second attempt
-was already spent. A non-timeout failure (a real 401/403/500) is never
-retried — doubling the timeout wouldn't change an authoritative status.
+proxy_down) — and a retry at 90s got a 200 in 26.1s, so not a wrong
+route either. That looked like "ENTSOE's Transparency Platform is just
+slow" — and it can be, but it turned out not to be the normal case
+(see the fourth cause below). A timeout specifically (not a definitive
+status like a 4xx) is retried exactly once at double the configured
+timeout before being called an error at all. If the retry succeeds,
+this run's data is used normally (still classified as one of the four
+schema/value states above) with `upstream_slow: true` noted alongside
+— it was slow, not broken, so it isn't logged as an error. If the
+retry also times out, it falls through to the canary_route/proxy_down
+probe below with `retried: true` so it's visible a second attempt was
+already spent — this is a residual, imperfect bucket: a route that
+keeps timing out even at 2x isn't proven wrong, only unusually heavy,
+and this file won't guess further than the reachability probe can
+show.
+
+A FOURTH cause was found the next time entsoe was checked: three
+separate calls, each with a 90s budget, each got a 502 back from the
+proxy in 5-17 seconds — fast, not a timeout at all. The proxy was
+relaying ENTSO-E's own HTTP 527/599 gateway errors: the upstream was
+genuinely down, not slow. A fast 5xx is the proxy answering coherently
+(so it isn't down, and the request wasn't retried, since a timeout
+retry can't fix an already-definitive status) while telling us
+something failed underneath it — `likely_cause: "upstream_error"`.
+Conflating this with canary_route would have blamed this file's own
+route/params for a failure that was entirely upstream's. The two
+entsoe incidents on record are opposite failure modes wearing a
+similar "it errored" shape: the first was upstream_slow (recovered on
+its own with more time), the second was upstream_error (didn't recover
+regardless of budget) — which is exactly why this file keeps refusing
+to collapse them into one label.
+
+Four causes, from cheapest to establish to most expensive:
+
+    upstream_error   fast 5xx — the proxy answered, upstream didn't
+    canary_route     fast 4xx — the proxy answered, our request is wrong
+    upstream_slow    timeout, then a 200 on a doubled-budget retry
+    proxy_down       timeout (even after retry) AND the index is also
+                      unreachable
+
+A 4xx or 5xx never triggers a retry — doubling the timeout can't change
+an already-definitive status, so it would only cost a second call for
+nothing.
 
 Every run is appended to monitor/log.ndjson (append-only audit trail).
 Current per-canary state lives in monitor/state.json (overwritten each
@@ -430,9 +461,32 @@ def run() -> int:
 
         if status != 200:
             had_error = True
-            if base not in reachable_cache:
-                reachable_cache[base] = _proxy_reachable(base)
-            likely_cause = "canary_route" if reachable_cache[base] else "proxy_down"
+            if status is None:
+                # No status at all, even after a retry if one was tried:
+                # genuinely don't know if this route is wrong or just
+                # heavier than 2x could cover. Only now is the
+                # reachability probe informative — a concrete status
+                # already answers the question below without it.
+                if base not in reachable_cache:
+                    reachable_cache[base] = _proxy_reachable(base)
+                likely_cause = "canary_route" if reachable_cache[base] else "proxy_down"
+            elif 500 <= status <= 599:
+                # A fast 5xx is the proxy answering coherently — it is
+                # up, and it is telling us something failed underneath
+                # it. entsoe-day-ahead's first real outage looked
+                # exactly like this: HTTP 527/599 from ENTSO-E itself,
+                # relayed as 502, arriving in 5-17s -- fast, not a
+                # timeout, and not this canary's route being wrong.
+                # Calling that "canary_route" would have blamed the
+                # wrong layer.
+                likely_cause = "upstream_error"
+            else:
+                # A 4xx is unambiguous by HTTP's own convention: the
+                # proxy answered, so it isn't down, and a client-error
+                # status means the fault is in what we asked for, not
+                # what's underneath. No need to spend a probe call
+                # confirming what the status already says outright.
+                likely_cause = "canary_route"
             entry = {"checked_at": now, "key": key, "event": "error",
                       "http_status": status, "detail": raw[:300].decode("utf-8", "replace"),
                       "likely_cause": likely_cause}

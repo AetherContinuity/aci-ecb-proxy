@@ -189,22 +189,24 @@ def test_both_hashes_changing_is_its_own_state(tmp_path, monkeypatch):
     assert [l["event"] for l in log_lines] == ["first_seen", "changed_and_schema_changed"]
 
 
-def test_error_blames_the_canary_route_when_proxy_index_answers(tmp_path, monkeypatch):
-    """The real case: fingrid-epp and eduskunta-vns8 both errored on the
-    first live run while both upstreams were actually fine — the canary
-    routes were wrong (one hardcoded to a dead dataset, one to a single
-    hardcoded case). An error must say so, not look identical to the
-    proxy itself being down.
+def test_error_blames_the_canary_route_on_a_fast_4xx(tmp_path, monkeypatch):
+    """The real case: fingrid-epp (401) and eduskunta-vns8 (403) both
+    errored on the first live run while both upstreams were actually
+    fine — the canary routes were wrong (one hardcoded to a dead
+    dataset, one to a single hardcoded case). A 4xx is unambiguous by
+    HTTP's own convention: the proxy answered, so the fault is in what
+    we asked for. No reachability probe needed to say so.
     """
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
+    probe_calls = {"n": 0}
+
     def fake_get(url, timeout=None):
-        # the canary path ("/x") errors; the reachability probe (anything
-        # else) gets the Worker's own always-JSON help response.
         if url.endswith("/x"):
-            return 500, json.dumps({"error": "boom"}).encode(), False
+            return 401, json.dumps({"error": "unauthorized"}).encode(), False
+        probe_calls["n"] += 1
         return 400, json.dumps({"error": "Available series:"}).encode(), False
 
     monkeypatch.setattr(monitor, "_get", fake_get)
@@ -214,6 +216,36 @@ def test_error_blames_the_canary_route_when_proxy_index_answers(tmp_path, monkey
     log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
     assert log_lines[0]["event"] == "error"
     assert log_lines[0]["likely_cause"] == "canary_route"
+    assert probe_calls["n"] == 0, "a concrete 4xx already answers the question; no probe needed"
+
+
+def test_error_blames_upstream_on_a_fast_5xx(tmp_path, monkeypatch):
+    """The second real entsoe incident: three calls at a 90s budget each
+    got a 502 back in 5-17s -- fast, not a timeout, relaying ENTSO-E's
+    own 527/599. The proxy answered coherently (so it isn't down and
+    the request isn't retried, since a timeout retry can't fix an
+    already-definitive status); the fault is upstream, not this
+    canary's route.
+    """
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
+
+    call_count = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        call_count["n"] += 1
+        return 502, json.dumps({"error": "bad gateway"}).encode(), False
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+
+    monitor.run()
+
+    log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
+    assert log_lines[0]["event"] == "error"
+    assert log_lines[0]["likely_cause"] == "upstream_error"
+    assert "retried" not in log_lines[0]
+    assert call_count["n"] == 1, "a fast 5xx is definitive -- it must not be retried"
 
 
 def test_error_blames_the_proxy_when_index_is_also_unreachable(tmp_path, monkeypatch):
@@ -232,7 +264,9 @@ def test_error_blames_the_proxy_when_index_is_also_unreachable(tmp_path, monkeyp
 
 
 def test_reachability_probe_runs_at_most_once_per_run(tmp_path, monkeypatch):
-    """Two failing canaries in the same run must not double-probe the index."""
+    """Two canaries that time out even after retrying (no status at all
+    to go on) must not double-probe the index in the same run.
+    """
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
     monkeypatch.setattr(monitor, "CANARIES", [
@@ -244,7 +278,7 @@ def test_reachability_probe_runs_at_most_once_per_run(tmp_path, monkeypatch):
 
     def fake_get(url, timeout=None):
         if url.endswith("/a") or url.endswith("/b"):
-            return 500, b'{"error":"boom"}', False
+            return None, b"The read operation timed out", True
         probe_calls["n"] += 1
         return 400, b'{"error":"Available series:"}', False
 
