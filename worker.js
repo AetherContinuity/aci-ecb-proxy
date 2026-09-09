@@ -371,7 +371,21 @@ async function route(req) {
       // Named aliases
       if (ECB_ALIAS[series]) {
         const d = await fetchECB(ECB_ALIAS[series], { start, end, last });
-        return Response.json({ series, ...d }, { headers: CORS });
+        // KORJATTU 2026-09-08: aiemmin `{ series, ...d }`. fetchECB palauttaa
+        // kentan `series` (HAVAINTOTAULUKKO), ja se ylikirjoitti muuttujan
+        // `series` (pyydetyn aliaksen nimen, esim. "ECB-DFR") koska ...d
+        // levitetaan jalkeen. Vastauksen series-kentta oli siis taulukko eika
+        // pyydetty nimi KAIKILLA ECB_ALIAS-reiteilla, ja alias katosi
+        // vastauksesta kokonaan.
+        //
+        // Sama vikaluokka kuin muut talla viikolla loydetyt: vastaus nayttaa
+        // oikealta, kentta on olemassa, sisalto on vaara. Nimitormays
+        // objektin spreadissa ei anna varoitusta.
+        //
+        // Nyt alias on omassa kentassaan eika tormaa. `series` sailyy
+        // havaintotaulukkona, kuten muillakin reiteilla — muoto on siis
+        // yhtenainen eika reittikohtainen.
+        return Response.json({ alias: series, ...d }, { headers: CORS });
       }
       // Inflation bundle: headline + core + energy + services in one call
       if (series === 'ECB-INFLATION') {
