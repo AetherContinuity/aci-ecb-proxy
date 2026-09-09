@@ -79,16 +79,20 @@ def test_error_does_not_touch_prior_state(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
 
-    calls = iter([(200, json.dumps({"fetched": "t", "value": 1}).encode()),
-                   (500, b"boom")])
-    monkeypatch.setattr(monitor, "_get", lambda url: next(calls))
-
+    first_run_calls = iter([(200, json.dumps({"fetched": "t", "value": 1}).encode())])
+    monkeypatch.setattr(monitor, "_get", lambda url: next(first_run_calls))
     monitor.run()
     state_after_success = monitor.load_state()
     assert state_after_success["x"]["unchanged_runs"] == 0
     saved_value_hash = state_after_success["x"]["value_hash"]
     saved_schema_hash = state_after_success["x"]["schema_hash"]
 
+    def fake_get_erroring(url):
+        if url.endswith("/x"):
+            return 500, b"boom"
+        return 400, b'{"error":"Available series:"}'  # reachability probe
+
+    monkeypatch.setattr(monitor, "_get", fake_get_erroring)
     monitor.run()
     state_after_error = monitor.load_state()
     # error must leave the prior entry exactly as it was
@@ -182,6 +186,71 @@ def test_both_hashes_changing_is_its_own_state(tmp_path, monkeypatch):
 
     log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
     assert [l["event"] for l in log_lines] == ["first_seen", "changed_and_schema_changed"]
+
+
+def test_error_blames_the_canary_route_when_proxy_index_answers(tmp_path, monkeypatch):
+    """The real case: fingrid-epp and eduskunta-vns8 both errored on the
+    first live run while both upstreams were actually fine — the canary
+    routes were wrong (one hardcoded to a dead dataset, one to a single
+    hardcoded case). An error must say so, not look identical to the
+    proxy itself being down.
+    """
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+
+    def fake_get(url):
+        # the canary path ("/x") errors; the reachability probe (anything
+        # else) gets the Worker's own always-JSON help response.
+        if url.endswith("/x"):
+            return 500, json.dumps({"error": "boom"}).encode()
+        return 400, json.dumps({"error": "Available series:"}).encode()
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+
+    monitor.run()
+
+    log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
+    assert log_lines[0]["event"] == "error"
+    assert log_lines[0]["likely_cause"] == "canary_route"
+
+
+def test_error_blames_the_proxy_when_index_is_also_unreachable(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+
+    # Everything is unreachable, canary and reachability probe alike.
+    monkeypatch.setattr(monitor, "_get", lambda url: (None, b"connection refused"))
+
+    monitor.run()
+
+    log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
+    assert log_lines[0]["event"] == "error"
+    assert log_lines[0]["likely_cause"] == "proxy_down"
+
+
+def test_reachability_probe_runs_at_most_once_per_run(tmp_path, monkeypatch):
+    """Two failing canaries in the same run must not double-probe the index."""
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES", [
+        {"key": "a", "path": "/a", "max_silence_hint": "n/a"},
+        {"key": "b", "path": "/b", "max_silence_hint": "n/a"},
+    ])
+
+    probe_calls = {"n": 0}
+
+    def fake_get(url):
+        if url.endswith("/a") or url.endswith("/b"):
+            return 500, b'{"error":"boom"}'
+        probe_calls["n"] += 1
+        return 400, b'{"error":"Available series:"}'
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+
+    monitor.run()
+    assert probe_calls["n"] == 1
 
 
 if __name__ == "__main__":

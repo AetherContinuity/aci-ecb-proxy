@@ -79,6 +79,20 @@ Comparing old vs. new on both axes gives four states, not two:
 HTTP errors are logged separately and never touch either stored hash —
 a transient failure must not masquerade as any of the four states.
 
+An error also does not, by itself, mean the upstream is down. The
+first real run found two canaries erroring (Fingrid EPP: 401,
+Eduskunta: 403) and both looked identical to a broken upstream — but
+both upstreams were fine; the canary routes were wrong (one pointed at
+a specific hardcoded dataset, the other at a single hardcoded case
+that may no longer exist). Same shape, opposite cause, and nothing
+here told them apart. So every error additionally probes the proxy's
+own index route (any recognized-or-not path — the Worker answers with
+its help JSON either way per its own error handler). If the index
+answers, the Worker is up and the canary's own route/params are what's
+wrong (`likely_cause: "canary_route"`); if the index is also
+unreachable, the whole proxy is down (`likely_cause: "proxy_down"`).
+This is a hint, not a verdict — see `_proxy_reachable`'s docstring.
+
 Every run is appended to monitor/log.ndjson (append-only audit trail).
 Current per-canary state lives in monitor/state.json (overwritten each
 run, small, diffable).
@@ -212,6 +226,35 @@ def _get(url: str) -> tuple[int | None, bytes]:
         return None, str(e).encode("utf-8")
 
 
+def _proxy_reachable() -> bool:
+    """Probe the Worker itself, independent of any single canary route.
+
+    worker.js answers ANY unrecognized query with a 400 + JSON help
+    body (see its final `route()` branch) rather than a network-level
+    failure — so a nonsense query is a safe, harmless way to ask "is
+    the Worker up at all" without depending on any canary's own path
+    staying valid. Getting parseable JSON back (whatever the status)
+    means the Worker answered; only a None status (DNS/timeout/connection
+    failure) or a non-JSON body means it didn't.
+
+    This is a hint for `likely_cause`, not a verdict: the Worker being
+    reachable doesn't prove a given canary's specific upstream call
+    would succeed, only that the failure isn't "the whole proxy is
+    down". Telling "this route is wrong" apart from "this route is
+    right but its own upstream is down" needs knowing the route is
+    correct in the first place — exactly the fact that was missing for
+    fingrid-epp and eduskunta-vns8.
+    """
+    status, raw = _get(BASE_URL + "/?__monitor_reachability_probe=1")
+    if status is None:
+        return False
+    try:
+        json.loads(raw.decode("utf-8"))
+        return True
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        return False
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -227,6 +270,7 @@ def run() -> int:
     now = _now_iso()
     log_lines: list[str] = []
     had_error = False
+    reachable: bool | None = None  # computed lazily, at most once per run
 
     for c in CANARIES:
         key = c["key"]
@@ -236,8 +280,12 @@ def run() -> int:
 
         if status != 200:
             had_error = True
+            if reachable is None:
+                reachable = _proxy_reachable()
+            likely_cause = "canary_route" if reachable else "proxy_down"
             entry = {"checked_at": now, "key": key, "event": "error",
-                      "http_status": status, "detail": raw[:300].decode("utf-8", "replace")}
+                      "http_status": status, "detail": raw[:300].decode("utf-8", "replace"),
+                      "likely_cause": likely_cause}
             log_lines.append(json.dumps(entry, ensure_ascii=False))
             # Deliberately do not touch state[key] — a transient failure
             # must not masquerade as "unchanged" (extends a silence streak
