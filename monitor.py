@@ -93,6 +93,53 @@ wrong (`likely_cause: "canary_route"`); if the index is also
 unreachable, the whole proxy is down (`likely_cause: "proxy_down"`).
 This is a hint, not a verdict — see `_proxy_reachable`'s docstring.
 
+A THIRD cause looks identical to both of those at first: entsoe's
+day-ahead route timed out at 30s on the first real run against all
+nine proxies, with the reachability probe answering fine (so not
+proxy_down) — and a retry at 90s got a 200 in 26.1s, so not a wrong
+route either. That looked like "ENTSOE's Transparency Platform is just
+slow" — and it can be, but it turned out not to be the normal case
+(see the fourth cause below). A timeout specifically (not a definitive
+status like a 4xx) is retried exactly once at double the configured
+timeout before being called an error at all. If the retry succeeds,
+this run's data is used normally (still classified as one of the four
+schema/value states above) with `upstream_slow: true` noted alongside
+— it was slow, not broken, so it isn't logged as an error. If the
+retry also times out, it falls through to the canary_route/proxy_down
+probe below with `retried: true` so it's visible a second attempt was
+already spent — this is a residual, imperfect bucket: a route that
+keeps timing out even at 2x isn't proven wrong, only unusually heavy,
+and this file won't guess further than the reachability probe can
+show.
+
+A FOURTH cause was found the next time entsoe was checked: three
+separate calls, each with a 90s budget, each got a 502 back from the
+proxy in 5-17 seconds — fast, not a timeout at all. The proxy was
+relaying ENTSO-E's own HTTP 527/599 gateway errors: the upstream was
+genuinely down, not slow. A fast 5xx is the proxy answering coherently
+(so it isn't down, and the request wasn't retried, since a timeout
+retry can't fix an already-definitive status) while telling us
+something failed underneath it — `likely_cause: "upstream_error"`.
+Conflating this with canary_route would have blamed this file's own
+route/params for a failure that was entirely upstream's. The two
+entsoe incidents on record are opposite failure modes wearing a
+similar "it errored" shape: the first was upstream_slow (recovered on
+its own with more time), the second was upstream_error (didn't recover
+regardless of budget) — which is exactly why this file keeps refusing
+to collapse them into one label.
+
+Four causes, from cheapest to establish to most expensive:
+
+    upstream_error   fast 5xx — the proxy answered, upstream didn't
+    canary_route     fast 4xx — the proxy answered, our request is wrong
+    upstream_slow    timeout, then a 200 on a doubled-budget retry
+    proxy_down       timeout (even after retry) AND the index is also
+                      unreachable
+
+A 4xx or 5xx never triggers a retry — doubling the timeout can't change
+an already-definitive status, so it would only cost a second call for
+nothing.
+
 Every run is appended to monitor/log.ndjson (append-only audit trail).
 Current per-canary state lives in monitor/state.json (overwritten each
 run, small, diffable).
@@ -212,8 +259,10 @@ CANARIES = [
      "build_path": _eduskunta_asia_path,
      "max_silence_hint": "single case's processing history — silence is normal for long stretches"},
     {"key": "entsoe-day-ahead", "base": "https://aci-entsoe-proxy.ruotsalainen-marko.workers.dev",
-     "build_path": _entsoe_day_ahead_path,
-     "max_silence_hint": "daily series; window rolls over once per calendar day"},
+     "build_path": _entsoe_day_ahead_path, "timeout": 90,
+     "max_silence_hint": "daily series; window rolls over once per calendar day",
+     "_timeout_note": "measured 26.1s for this exact request 2026-09-09; "
+                       "30s (the default) timed out, 90s gives real margin"},
     {"key": "nve-week", "base": "https://aci-nve-proxy.ruotsalainen-marko.workers.dev",
      "path": "/?week=latest",
      "max_silence_hint": "weekly series — unchanged_runs climbs ~7 runs then resets; that cycle is normal, not a threshold to alarm on"},
@@ -311,15 +360,35 @@ def content_hashes(raw: bytes) -> tuple[str | None, str | None, bool]:
     return schema_hash, value_hash, True
 
 
-def _get(url: str) -> tuple[int | None, bytes]:
+DEFAULT_TIMEOUT = 30
+
+
+def _get(url: str, timeout: int = DEFAULT_TIMEOUT) -> tuple[int | None, bytes, bool]:
+    """Returns (status, body, timed_out). timed_out is only True for a
+    read/connect timeout specifically — distinct from a DNS failure or
+    connection refused, both of which also give status=None but are
+    not "slow", they're "absent". Only a timeout is worth retrying at
+    a longer budget; the other failures would just fail again.
+    """
     req = urllib.request.Request(url, headers=UA)
     try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            return r.status, r.read()
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            return r.status, r.read(), False
     except urllib.error.HTTPError as e:
-        return e.code, e.read()
-    except Exception as e:  # network failure, timeout, DNS — genuinely unreachable
-        return None, str(e).encode("utf-8")
+        return e.code, e.read(), False
+    except TimeoutError as e:
+        # A read timeout (connection established, upstream just slow)
+        # propagates as a bare TimeoutError from http.client — this is
+        # what ENTSOE's day-ahead route actually does under this UA.
+        return None, str(e).encode("utf-8"), True
+    except urllib.error.URLError as e:
+        # A connect-phase timeout is instead wrapped by urllib as
+        # URLError(TimeoutError(...)) — same underlying cause, different
+        # wrapping, so it needs its own check to be treated the same way.
+        timed_out = isinstance(e.reason, TimeoutError)
+        return None, str(e).encode("utf-8"), timed_out
+    except Exception as e:  # DNS failure and anything else — genuinely unreachable
+        return None, str(e).encode("utf-8"), False
 
 
 def _proxy_reachable(base: str) -> bool:
@@ -347,7 +416,7 @@ def _proxy_reachable(base: str) -> bool:
     the route is correct in the first place — exactly the fact that was
     missing for fingrid-epp and eduskunta-vns8 before this fix.
     """
-    status, _ = _get(base + "/__monitor_reachability_probe__")
+    status, _, _ = _get(base + "/__monitor_reachability_probe__")
     return status is not None
 
 
@@ -373,17 +442,56 @@ def run() -> int:
         base = c["base"]
         path = c["build_path"]() if "build_path" in c else c["path"]
         url = base + path
-        status, raw = _get(url)
+        timeout = c.get("timeout", DEFAULT_TIMEOUT)
+        status, raw, timed_out = _get(url, timeout=timeout)
         prev = state.get(key)
+        upstream_slow = False
+        retried = False
+
+        if status != 200 and timed_out:
+            # Only a timeout is worth a second try — doubling the
+            # budget can't change a definitive 401/403/500, only a
+            # "hadn't answered yet". If this succeeds, the cause was
+            # upstream slowness, not a broken route: don't call it an
+            # error at all.
+            retried = True
+            status, raw, timed_out = _get(url, timeout=timeout * 2)
+            if status == 200:
+                upstream_slow = True
 
         if status != 200:
             had_error = True
-            if base not in reachable_cache:
-                reachable_cache[base] = _proxy_reachable(base)
-            likely_cause = "canary_route" if reachable_cache[base] else "proxy_down"
+            if status is None:
+                # No status at all, even after a retry if one was tried:
+                # genuinely don't know if this route is wrong or just
+                # heavier than 2x could cover. Only now is the
+                # reachability probe informative — a concrete status
+                # already answers the question below without it.
+                if base not in reachable_cache:
+                    reachable_cache[base] = _proxy_reachable(base)
+                likely_cause = "canary_route" if reachable_cache[base] else "proxy_down"
+            elif 500 <= status <= 599:
+                # A fast 5xx is the proxy answering coherently — it is
+                # up, and it is telling us something failed underneath
+                # it. entsoe-day-ahead's first real outage looked
+                # exactly like this: HTTP 527/599 from ENTSO-E itself,
+                # relayed as 502, arriving in 5-17s -- fast, not a
+                # timeout, and not this canary's route being wrong.
+                # Calling that "canary_route" would have blamed the
+                # wrong layer.
+                likely_cause = "upstream_error"
+            else:
+                # A 4xx is unambiguous by HTTP's own convention: the
+                # proxy answered, so it isn't down, and a client-error
+                # status means the fault is in what we asked for, not
+                # what's underneath. No need to spend a probe call
+                # confirming what the status already says outright.
+                likely_cause = "canary_route"
             entry = {"checked_at": now, "key": key, "event": "error",
                       "http_status": status, "detail": raw[:300].decode("utf-8", "replace"),
                       "likely_cause": likely_cause}
+            if retried:
+                entry["retried"] = True
             log_lines.append(json.dumps(entry, ensure_ascii=False))
             # Deliberately do not touch state[key] — a transient failure
             # must not masquerade as "unchanged" (extends a silence streak
@@ -423,11 +531,17 @@ def run() -> int:
             "last_checked": now,
             "max_silence_hint": c["max_silence_hint"],
         }
-        log_lines.append(json.dumps({
+        log_entry = {
             "checked_at": now, "key": key, "event": event,
             "schema_hash": schema_hash, "value_hash": value_hash,
             "byte_length": byte_length, "unchanged_runs": unchanged_runs,
-        }, ensure_ascii=False))
+        }
+        if upstream_slow:
+            # Slow, not broken: succeeded on the doubled-timeout retry.
+            # Still classified as one of the four states above -- this
+            # flag is additive information, not a fifth event type.
+            log_entry["upstream_slow"] = True
+        log_lines.append(json.dumps(log_entry, ensure_ascii=False))
 
     STATE_FILE.parent.mkdir(exist_ok=True)
     STATE_FILE.write_text(json.dumps(state, indent=1, sort_keys=True, ensure_ascii=False) + "\n",
