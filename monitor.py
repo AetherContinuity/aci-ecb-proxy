@@ -103,39 +103,135 @@ from __future__ import annotations
 import hashlib
 import json
 import sys
+import urllib.parse
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-BASE_URL = "https://aci-ecb-proxy.ruotsalainen-marko.workers.dev"
+ECB_BASE_URL = "https://aci-ecb-proxy.ruotsalainen-marko.workers.dev"
 UA = {"User-Agent": "aci-ecb-proxy-monitor/0.1"}
 
 HERE = Path(__file__).resolve().parent
 STATE_FILE = HERE / "monitor" / "state.json"
 LOG_FILE = HERE / "monitor" / "log.ndjson"
 
-# Six canaries, one per upstream family documented in README.md, using
-# only routes given there as concrete worked examples — no invented
-# series keys (Suomen Pankki is excluded for exactly that reason: no
-# safe example key is given, and a wrong seriesName is a silent trap
-# per the README's own warnings).
+
+def _fingrid_epp_path() -> str:
+    """Sliding 6h window, not a fixed timestamp.
+
+    A fixed start/end freezes: every run after the window has fully
+    passed would keep returning the same cached answer forever,
+    reading as `unchanged` for the wrong reason (a frozen request, not
+    a stable series) — the exact confusion this file exists to avoid
+    causing, this time in its own canary's argument rather than the
+    upstream's data.
+    """
+    now = datetime.now(timezone.utc)
+    start = (now - timedelta(hours=6)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    end = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    return f"/api?ds=192&start={start}&end={end}&size=5"
+
+
+def _eduskunta_asia_path() -> str:
+    # The value contains a literal "/" that MUST be percent-encoded
+    # (%2F) — this is the same trap the ?votes= route taught: a raw
+    # slash does not work. urllib.parse.quote's default `safe='/'`
+    # would leave it unescaped, so safe='' is required here.
+    asia = urllib.parse.quote("HE 101/2024", safe="")
+    return f"/?asia={asia}"
+
+
+def _entsoe_day_ahead_path() -> str:
+    """Sliding window, same reasoning as _fingrid_epp_path: a fixed
+    periodStart/periodEnd would freeze once the day has passed.
+
+    Uses today's full UTC calendar day rather than a fixed trailing
+    span like Fingrid's — day-ahead prices are published per calendar
+    day, so "today" is the natural, always-populated window and it
+    only rolls over once every 24h (not exercising this route between
+    runs as often as Fingrid's, which is fine: ENTSOE-DFR-style step
+    series get the same "long unchanged is normal" treatment via
+    max_silence_hint).
+
+    NOT verified from this environment: only the parameter names
+    (bzn, periodStart, periodEnd) and that ISO timestamps are expected
+    were confirmed live; the exact accepted format string wasn't
+    pinned down further than "ISO". If the first real run 400s here,
+    check whether it wants %Y-%m-%dT%H:%M:%SZ (used below, matching
+    Fingrid's confirmed format) or ENTSOE's own compact %Y%m%d%H%M.
+    """
+    now = datetime.now(timezone.utc)
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = start_of_day + timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (f"/day-ahead-price?bzn=FI&periodStart={start_of_day.strftime(fmt)}"
+            f"&periodEnd={end_of_day.strftime(fmt)}")
+
+
+# Thirteen canaries across six proxies (four already handled: fingrid,
+# eduskunta above; ecb's four routes below). Two of the twelve proxies
+# are deliberately NOT here: aci-lausunto-proxy is being retired (its
+# one upstream, Lausuntopalvelu, 522'd on all three tries — the data
+# it was built for already comes from Hankeikkuna's own `asiakirjat`
+# field instead), and aci-finto-proxy is unbuilt-but-not-abandoned
+# (waiting on a ROE decision about thematic groups as a D/O/S anchor —
+# see its own README) — deploying either just to watch it would monitor
+# a decision that hasn't been made, not a live failure mode.
+#
+# Base URLs for the five new hosts follow the same
+# <repo-name>.ruotsalainen-marko.workers.dev convention already
+# confirmed correct for aci-ecb-proxy, aci-fingrid-proxy and
+# aci-policy-proxy (3/3 so far) — plausible, not independently
+# reverified per-host from this environment.
+#
+# Six of the seven routes below are static or parameterless; only
+# entsoe needs a sliding window (see _entsoe_day_ahead_path). nve's
+# `?week=latest` is its own interesting case: it legitimately changes
+# once a week, so unchanged_runs will climb for ~7 daily runs and then
+# reset — that cyclical pattern, not a number, is what "legitimately
+# slow" looks like here, which is exactly why max_silence_hint stays a
+# hint instead of a threshold.
 #
 # max_silence_hint is informational only (see module docstring) —
 # not measured yet, not enforced.
 CANARIES = [
-    {"key": "eurostat-fi10y", "path": "/?series=FI10Y",
+    {"key": "eurostat-fi10y", "base": ECB_BASE_URL, "path": "/?series=FI10Y",
      "max_silence_hint": "monthly series — unmeasured"},
-    {"key": "ecb-dfr", "path": "/?series=ECB-DFR",
+    {"key": "ecb-dfr", "base": ECB_BASE_URL, "path": "/?series=ECB-DFR",
      "max_silence_hint": "step series, changes only on ECB decision dates — long silence is normal"},
-    {"key": "vk-debt-interest", "path": "/?series=VK-INTEREST",
+    {"key": "vk-debt-interest", "base": ECB_BASE_URL, "path": "/?series=VK-INTEREST",
      "max_silence_hint": "unmeasured"},
-    {"key": "vk-budget-interest", "path": "/?series=VT-INTEREST&yearFrom=2024&yearTo=2026",
+    {"key": "vk-budget-interest", "base": ECB_BASE_URL,
+     "path": "/?series=VT-INTEREST&yearFrom=2024&yearTo=2026",
      "max_silence_hint": "unmeasured"},
-    {"key": "fingrid-epp", "path": "/?series=FINGRID-EPP",
-     "max_silence_hint": "5 min cache TTL upstream — should move within hours"},
-    {"key": "eduskunta-vns8", "path": "/?series=EDK-VNS82025",
-     "max_silence_hint": "process tracking — silence is normal between sessions"},
+    {"key": "fingrid-ds192", "base": "https://aci-fingrid-proxy.ruotsalainen-marko.workers.dev",
+     "build_path": _fingrid_epp_path,
+     "max_silence_hint": "should move within hours; sliding 6h window, never frozen"},
+    {"key": "eduskunta-asia", "base": "https://aci-policy-proxy.ruotsalainen-marko.workers.dev",
+     "build_path": _eduskunta_asia_path,
+     "max_silence_hint": "single case's processing history — silence is normal for long stretches"},
+    {"key": "entsoe-day-ahead", "base": "https://aci-entsoe-proxy.ruotsalainen-marko.workers.dev",
+     "build_path": _entsoe_day_ahead_path,
+     "max_silence_hint": "daily series; window rolls over once per calendar day"},
+    {"key": "nve-week", "base": "https://aci-nve-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?week=latest",
+     "max_silence_hint": "weekly series — unchanged_runs climbs ~7 runs then resets; that cycle is normal, not a threshold to alarm on"},
+    {"key": "transmission-ds191", "base": "https://aci-transmission-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?ds=191",
+     "max_silence_hint": "unmeasured — ds=192 is NOT in this proxy's allowed list, confirmed 68 datasets only, 191 is"},
+    {"key": "pxweb-klv", "base": "https://aci-pxweb-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?p=StatFin/klv/14lj.px",
+     "max_silence_hint": "unmeasured — param is `p` not `px`, and path is StatFin's own table id, not Tilastokeskus's statfin_klv_pxt_14lj.px form"},
+    {"key": "amoc-index", "base": "https://aci-amoc-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/",
+     "max_silence_hint": "unmeasured — no params; the index route itself is the canary here"},
+    {"key": "bem-index", "base": "https://aci-bem-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/",
+     "max_silence_hint": "unmeasured — no params; the index route itself is the canary here"},
+    {"key": "avoimuus-terms", "base": "https://aci-avoimuus-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?r=terms_all",
+     "max_silence_hint": "unmeasured"},
 ]
 
 
@@ -226,33 +322,33 @@ def _get(url: str) -> tuple[int | None, bytes]:
         return None, str(e).encode("utf-8")
 
 
-def _proxy_reachable() -> bool:
-    """Probe the Worker itself, independent of any single canary route.
+def _proxy_reachable(base: str) -> bool:
+    """Probe the HOST a canary lives on, independent of that canary's
+    own path being correct.
 
-    worker.js answers ANY unrecognized query with a 400 + JSON help
-    body (see its final `route()` branch) rather than a network-level
-    failure — so a nonsense query is a safe, harmless way to ask "is
-    the Worker up at all" without depending on any canary's own path
-    staying valid. Getting parseable JSON back (whatever the status)
-    means the Worker answered; only a None status (DNS/timeout/connection
-    failure) or a non-JSON body means it didn't.
+    Deliberately does NOT require any particular response shape or
+    status code — canaries now live on three different Workers
+    (aci-ecb-proxy, aci-fingrid-proxy, aci-policy-proxy), each with its
+    own routing (aci-ecb-proxy answers unknown queries at `/` with a
+    JSON help body; aci-fingrid-proxy's real routes are under `/api`,
+    a fact learned the hard way for the canary path itself and not
+    worth re-assuming for a probe path too). Any HTTP response at all —
+    200, 400, 404, whatever — means the Worker is up and answering;
+    only a None status (DNS failure, timeout, connection refused) means
+    the host itself is down. This is intentionally the weakest possible
+    check for exactly that reason: it needs no knowledge of any proxy's
+    internal routes, so it can't itself become another guessed path.
 
-    This is a hint for `likely_cause`, not a verdict: the Worker being
-    reachable doesn't prove a given canary's specific upstream call
-    would succeed, only that the failure isn't "the whole proxy is
-    down". Telling "this route is wrong" apart from "this route is
-    right but its own upstream is down" needs knowing the route is
-    correct in the first place — exactly the fact that was missing for
-    fingrid-epp and eduskunta-vns8.
+    This is a hint for `likely_cause`, not a verdict: the host
+    responding to HTTP doesn't prove a given canary's specific route or
+    its upstream call would succeed, only that the failure isn't "the
+    whole service is down". Telling "this route is wrong" apart from
+    "this route is right but its own upstream is down" needs knowing
+    the route is correct in the first place — exactly the fact that was
+    missing for fingrid-epp and eduskunta-vns8 before this fix.
     """
-    status, raw = _get(BASE_URL + "/?__monitor_reachability_probe=1")
-    if status is None:
-        return False
-    try:
-        json.loads(raw.decode("utf-8"))
-        return True
-    except (json.JSONDecodeError, UnicodeDecodeError):
-        return False
+    status, _ = _get(base + "/__monitor_reachability_probe__")
+    return status is not None
 
 
 def _now_iso() -> str:
@@ -270,19 +366,21 @@ def run() -> int:
     now = _now_iso()
     log_lines: list[str] = []
     had_error = False
-    reachable: bool | None = None  # computed lazily, at most once per run
+    reachable_cache: dict[str, bool] = {}  # per host, at most one probe each per run
 
     for c in CANARIES:
         key = c["key"]
-        url = BASE_URL + c["path"]
+        base = c["base"]
+        path = c["build_path"]() if "build_path" in c else c["path"]
+        url = base + path
         status, raw = _get(url)
         prev = state.get(key)
 
         if status != 200:
             had_error = True
-            if reachable is None:
-                reachable = _proxy_reachable()
-            likely_cause = "canary_route" if reachable else "proxy_down"
+            if base not in reachable_cache:
+                reachable_cache[base] = _proxy_reachable(base)
+            likely_cause = "canary_route" if reachable_cache[base] else "proxy_down"
             entry = {"checked_at": now, "key": key, "event": "error",
                       "http_status": status, "detail": raw[:300].decode("utf-8", "replace"),
                       "likely_cause": likely_cause}

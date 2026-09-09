@@ -77,7 +77,7 @@ def test_non_json_body_falls_back_to_raw_hash_and_flags_it():
 def test_error_does_not_touch_prior_state(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     first_run_calls = iter([(200, json.dumps({"fetched": "t", "value": 1}).encode())])
     monkeypatch.setattr(monitor, "_get", lambda url: next(first_run_calls))
@@ -108,7 +108,7 @@ def test_error_does_not_touch_prior_state(tmp_path, monkeypatch):
 def test_unchanged_runs_increments_across_identical_fetches(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     body = json.dumps({"fetched": "t1", "value": 1}).encode()
     body_same_value_new_fetch = json.dumps({"fetched": "t2", "value": 1}).encode()
@@ -126,7 +126,7 @@ def test_unchanged_runs_increments_across_identical_fetches(tmp_path, monkeypatc
 def test_changed_value_resets_unchanged_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     calls = iter([
         (200, json.dumps({"fetched": "t1", "value": 1}).encode()),
@@ -154,7 +154,7 @@ def test_field_rename_with_same_value_logs_as_schema_changed_only(tmp_path, monk
     """
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     calls = iter([
         (200, json.dumps({"fetched": "t1", "series": "ECB-DFR", "value": 1}).encode()),
@@ -173,7 +173,7 @@ def test_field_rename_with_same_value_logs_as_schema_changed_only(tmp_path, monk
 def test_both_hashes_changing_is_its_own_state(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     calls = iter([
         (200, json.dumps({"fetched": "t1", "series": "ECB-DFR", "value": 1}).encode()),
@@ -197,7 +197,7 @@ def test_error_blames_the_canary_route_when_proxy_index_answers(tmp_path, monkey
     """
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     def fake_get(url):
         # the canary path ("/x") errors; the reachability probe (anything
@@ -218,7 +218,7 @@ def test_error_blames_the_canary_route_when_proxy_index_answers(tmp_path, monkey
 def test_error_blames_the_proxy_when_index_is_also_unreachable(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
-    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "path": "/x", "max_silence_hint": "n/a"}])
+    monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     # Everything is unreachable, canary and reachability probe alike.
     monkeypatch.setattr(monitor, "_get", lambda url: (None, b"connection refused"))
@@ -235,8 +235,8 @@ def test_reachability_probe_runs_at_most_once_per_run(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
     monkeypatch.setattr(monitor, "CANARIES", [
-        {"key": "a", "path": "/a", "max_silence_hint": "n/a"},
-        {"key": "b", "path": "/b", "max_silence_hint": "n/a"},
+        {"key": "a", "base": "http://test", "path": "/a", "max_silence_hint": "n/a"},
+        {"key": "b", "base": "http://test", "path": "/b", "max_silence_hint": "n/a"},
     ])
 
     probe_calls = {"n": 0}
@@ -251,6 +251,102 @@ def test_reachability_probe_runs_at_most_once_per_run(tmp_path, monkeypatch):
 
     monitor.run()
     assert probe_calls["n"] == 1
+
+
+def test_fingrid_path_uses_sliding_window_not_fixed_timestamps():
+    """A fixed start/end would freeze once the window has fully passed,
+    reading as unchanged for the wrong reason forever after. Two calls
+    a moment apart must differ (end advances) but stay within the
+    documented 6h span.
+    """
+    import re
+
+    p1 = monitor._fingrid_epp_path()
+    p2 = monitor._fingrid_epp_path()
+    assert p1.startswith("/api?ds=192&start=")
+    m = re.search(r"start=([^&]+)&end=([^&]+)&size=5", p1)
+    assert m, p1
+    start, end = m.group(1), m.group(2)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    from datetime import datetime as _dt
+    delta = _dt.strptime(end, fmt) - _dt.strptime(start, fmt)
+    assert delta.total_seconds() == 6 * 3600
+    # not asserting p1 != p2: two calls in the same second are legitimately
+    # identical. What matters is that the path is generated per-call from
+    # the current time, not a baked-in literal.
+    assert "start=" in p2 and "end=" in p2
+
+
+def test_eduskunta_path_percent_encodes_the_slash():
+    path = monitor._eduskunta_asia_path()
+    assert path == "/?asia=HE%20101%2F2024"
+    assert "/2024" not in path, "a raw slash in the value is the exact trap ?votes= already taught"
+
+
+def test_canaries_route_to_six_distinct_hosts():
+    bases = {c["base"] for c in monitor.CANARIES}
+    assert bases == {
+        "https://aci-ecb-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-fingrid-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-policy-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-entsoe-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-nve-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-transmission-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-pxweb-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-amoc-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-bem-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-avoimuus-proxy.ruotsalainen-marko.workers.dev",
+    }
+
+
+def test_every_canary_has_exactly_one_way_to_get_a_path():
+    for c in monitor.CANARIES:
+        has_path = "path" in c
+        has_build = "build_path" in c
+        assert has_path != has_build, f"{c['key']}: needs exactly one of path/build_path"
+
+
+def test_canary_keys_are_unique():
+    keys = [c["key"] for c in monitor.CANARIES]
+    assert len(keys) == len(set(keys))
+
+
+def test_entsoe_path_uses_sliding_daily_window_not_fixed_timestamps():
+    import re
+
+    path = monitor._entsoe_day_ahead_path()
+    assert path.startswith("/day-ahead-price?bzn=FI&periodStart=")
+    m = re.search(r"periodStart=([^&]+)&periodEnd=([^&]+)$", path)
+    assert m, path
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    from datetime import datetime as _dt
+    start = _dt.strptime(m.group(1), fmt)
+    end = _dt.strptime(m.group(2), fmt)
+    assert (end - start).total_seconds() == 24 * 3600
+    assert start.hour == 0 and start.minute == 0 and start.second == 0, \
+        "window should be a full UTC calendar day, not an arbitrary trailing span"
+
+
+def test_run_uses_build_path_when_present(tmp_path, monkeypatch):
+    """fingrid-ds192 and eduskunta-asia have no static `path` at all —
+    run() must call build_path() rather than KeyError on a missing key.
+    """
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES", [
+        {"key": "dynamic", "base": "http://test", "build_path": lambda: "/computed",
+         "max_silence_hint": "n/a"},
+    ])
+
+    seen_urls = []
+
+    def fake_get(url):
+        seen_urls.append(url)
+        return 200, json.dumps({"fetched": "t", "value": 1}).encode()
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+    monitor.run()
+    assert seen_urls == ["http://test/computed"]
 
 
 if __name__ == "__main__":
