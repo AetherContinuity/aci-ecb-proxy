@@ -283,13 +283,48 @@ def test_eduskunta_path_percent_encodes_the_slash():
     assert "/2024" not in path, "a raw slash in the value is the exact trap ?votes= already taught"
 
 
-def test_canaries_route_to_three_distinct_hosts():
+def test_canaries_route_to_six_distinct_hosts():
     bases = {c["base"] for c in monitor.CANARIES}
     assert bases == {
         "https://aci-ecb-proxy.ruotsalainen-marko.workers.dev",
         "https://aci-fingrid-proxy.ruotsalainen-marko.workers.dev",
         "https://aci-policy-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-entsoe-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-nve-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-transmission-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-pxweb-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-amoc-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-bem-proxy.ruotsalainen-marko.workers.dev",
+        "https://aci-avoimuus-proxy.ruotsalainen-marko.workers.dev",
     }
+
+
+def test_every_canary_has_exactly_one_way_to_get_a_path():
+    for c in monitor.CANARIES:
+        has_path = "path" in c
+        has_build = "build_path" in c
+        assert has_path != has_build, f"{c['key']}: needs exactly one of path/build_path"
+
+
+def test_canary_keys_are_unique():
+    keys = [c["key"] for c in monitor.CANARIES]
+    assert len(keys) == len(set(keys))
+
+
+def test_entsoe_path_uses_sliding_daily_window_not_fixed_timestamps():
+    import re
+
+    path = monitor._entsoe_day_ahead_path()
+    assert path.startswith("/day-ahead-price?bzn=FI&periodStart=")
+    m = re.search(r"periodStart=([^&]+)&periodEnd=([^&]+)$", path)
+    assert m, path
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    from datetime import datetime as _dt
+    start = _dt.strptime(m.group(1), fmt)
+    end = _dt.strptime(m.group(2), fmt)
+    assert (end - start).total_seconds() == 24 * 3600
+    assert start.hour == 0 and start.minute == 0 and start.second == 0, \
+        "window should be a full UTC calendar day, not an arbitrary trailing span"
 
 
 def test_run_uses_build_path_when_present(tmp_path, monkeypatch):

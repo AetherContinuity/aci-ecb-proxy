@@ -142,21 +142,56 @@ def _eduskunta_asia_path() -> str:
     return f"/?asia={asia}"
 
 
-# Eight canaries. Six live on aci-ecb-proxy, one per upstream family
-# documented in README.md, using only routes given there as concrete
-# worked examples — no invented series keys (Suomen Pankki is excluded
-# for exactly that reason: no safe example key is given, and a wrong
-# seriesName is a silent trap per the README's own warnings). Two live
-# on the proxies that actually own that data: Fingrid's real datasets
-# and Eduskunta's case search are NOT re-exposed as generic passthroughs
-# on aci-ecb-proxy (its FINGRID-EPP and EDK-VNS82025 routes are each
-# hardcoded to one specific dataset/case — that's what broke on the
-# first run), and adding generic ?ds=/?asia= passthroughs here instead
-# would just make this proxy a second, competing owner of the same
-# upstream — the isolation this whole system relies on argues against
-# that as strongly as it argues for twelve separate proxies in the
-# first place. A canary that points at the wrong service is a worse
-# bug than a canary that points at the right one in another repo.
+def _entsoe_day_ahead_path() -> str:
+    """Sliding window, same reasoning as _fingrid_epp_path: a fixed
+    periodStart/periodEnd would freeze once the day has passed.
+
+    Uses today's full UTC calendar day rather than a fixed trailing
+    span like Fingrid's — day-ahead prices are published per calendar
+    day, so "today" is the natural, always-populated window and it
+    only rolls over once every 24h (not exercising this route between
+    runs as often as Fingrid's, which is fine: ENTSOE-DFR-style step
+    series get the same "long unchanged is normal" treatment via
+    max_silence_hint).
+
+    NOT verified from this environment: only the parameter names
+    (bzn, periodStart, periodEnd) and that ISO timestamps are expected
+    were confirmed live; the exact accepted format string wasn't
+    pinned down further than "ISO". If the first real run 400s here,
+    check whether it wants %Y-%m-%dT%H:%M:%SZ (used below, matching
+    Fingrid's confirmed format) or ENTSOE's own compact %Y%m%d%H%M.
+    """
+    now = datetime.now(timezone.utc)
+    start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    end_of_day = start_of_day + timedelta(days=1)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    return (f"/day-ahead-price?bzn=FI&periodStart={start_of_day.strftime(fmt)}"
+            f"&periodEnd={end_of_day.strftime(fmt)}")
+
+
+# Thirteen canaries across six proxies (four already handled: fingrid,
+# eduskunta above; ecb's four routes below). Two of the twelve proxies
+# are deliberately NOT here: aci-lausunto-proxy is being retired (its
+# one upstream, Lausuntopalvelu, 522'd on all three tries — the data
+# it was built for already comes from Hankeikkuna's own `asiakirjat`
+# field instead), and aci-finto-proxy is unbuilt-but-not-abandoned
+# (waiting on a ROE decision about thematic groups as a D/O/S anchor —
+# see its own README) — deploying either just to watch it would monitor
+# a decision that hasn't been made, not a live failure mode.
+#
+# Base URLs for the five new hosts follow the same
+# <repo-name>.ruotsalainen-marko.workers.dev convention already
+# confirmed correct for aci-ecb-proxy, aci-fingrid-proxy and
+# aci-policy-proxy (3/3 so far) — plausible, not independently
+# reverified per-host from this environment.
+#
+# Six of the seven routes below are static or parameterless; only
+# entsoe needs a sliding window (see _entsoe_day_ahead_path). nve's
+# `?week=latest` is its own interesting case: it legitimately changes
+# once a week, so unchanged_runs will climb for ~7 daily runs and then
+# reset — that cyclical pattern, not a number, is what "legitimately
+# slow" looks like here, which is exactly why max_silence_hint stays a
+# hint instead of a threshold.
 #
 # max_silence_hint is informational only (see module docstring) —
 # not measured yet, not enforced.
@@ -176,6 +211,27 @@ CANARIES = [
     {"key": "eduskunta-asia", "base": "https://aci-policy-proxy.ruotsalainen-marko.workers.dev",
      "build_path": _eduskunta_asia_path,
      "max_silence_hint": "single case's processing history — silence is normal for long stretches"},
+    {"key": "entsoe-day-ahead", "base": "https://aci-entsoe-proxy.ruotsalainen-marko.workers.dev",
+     "build_path": _entsoe_day_ahead_path,
+     "max_silence_hint": "daily series; window rolls over once per calendar day"},
+    {"key": "nve-week", "base": "https://aci-nve-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?week=latest",
+     "max_silence_hint": "weekly series — unchanged_runs climbs ~7 runs then resets; that cycle is normal, not a threshold to alarm on"},
+    {"key": "transmission-ds191", "base": "https://aci-transmission-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?ds=191",
+     "max_silence_hint": "unmeasured — ds=192 is NOT in this proxy's allowed list, confirmed 68 datasets only, 191 is"},
+    {"key": "pxweb-klv", "base": "https://aci-pxweb-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?p=StatFin/klv/14lj.px",
+     "max_silence_hint": "unmeasured — param is `p` not `px`, and path is StatFin's own table id, not Tilastokeskus's statfin_klv_pxt_14lj.px form"},
+    {"key": "amoc-index", "base": "https://aci-amoc-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/",
+     "max_silence_hint": "unmeasured — no params; the index route itself is the canary here"},
+    {"key": "bem-index", "base": "https://aci-bem-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/",
+     "max_silence_hint": "unmeasured — no params; the index route itself is the canary here"},
+    {"key": "avoimuus-terms", "base": "https://aci-avoimuus-proxy.ruotsalainen-marko.workers.dev",
+     "path": "/?r=terms_all",
+     "max_silence_hint": "unmeasured"},
 ]
 
 
