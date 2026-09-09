@@ -79,18 +79,18 @@ def test_error_does_not_touch_prior_state(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
-    first_run_calls = iter([(200, json.dumps({"fetched": "t", "value": 1}).encode())])
-    monkeypatch.setattr(monitor, "_get", lambda url: next(first_run_calls))
+    first_run_calls = iter([(200, json.dumps({"fetched": "t", "value": 1}).encode(), False)])
+    monkeypatch.setattr(monitor, "_get", lambda url, timeout=None: next(first_run_calls))
     monitor.run()
     state_after_success = monitor.load_state()
     assert state_after_success["x"]["unchanged_runs"] == 0
     saved_value_hash = state_after_success["x"]["value_hash"]
     saved_schema_hash = state_after_success["x"]["schema_hash"]
 
-    def fake_get_erroring(url):
+    def fake_get_erroring(url, timeout=None):
         if url.endswith("/x"):
-            return 500, b"boom"
-        return 400, b'{"error":"Available series:"}'  # reachability probe
+            return 500, b"boom", False
+        return 400, b'{"error":"Available series:"}', False  # reachability probe
 
     monkeypatch.setattr(monitor, "_get", fake_get_erroring)
     monitor.run()
@@ -112,8 +112,9 @@ def test_unchanged_runs_increments_across_identical_fetches(tmp_path, monkeypatc
 
     body = json.dumps({"fetched": "t1", "value": 1}).encode()
     body_same_value_new_fetch = json.dumps({"fetched": "t2", "value": 1}).encode()
-    calls = iter([(200, body), (200, body_same_value_new_fetch), (200, body_same_value_new_fetch)])
-    monkeypatch.setattr(monitor, "_get", lambda url: next(calls))
+    calls = iter([(200, body, False), (200, body_same_value_new_fetch, False),
+                  (200, body_same_value_new_fetch, False)])
+    monkeypatch.setattr(monitor, "_get", lambda url, timeout=None: next(calls))
 
     monitor.run()
     assert monitor.load_state()["x"]["unchanged_runs"] == 0  # first_seen
@@ -129,11 +130,11 @@ def test_changed_value_resets_unchanged_runs(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     calls = iter([
-        (200, json.dumps({"fetched": "t1", "value": 1}).encode()),
-        (200, json.dumps({"fetched": "t2", "value": 1}).encode()),
-        (200, json.dumps({"fetched": "t3", "value": 2}).encode()),
+        (200, json.dumps({"fetched": "t1", "value": 1}).encode(), False),
+        (200, json.dumps({"fetched": "t2", "value": 1}).encode(), False),
+        (200, json.dumps({"fetched": "t3", "value": 2}).encode(), False),
     ])
-    monkeypatch.setattr(monitor, "_get", lambda url: next(calls))
+    monkeypatch.setattr(monitor, "_get", lambda url, timeout=None: next(calls))
 
     monitor.run()
     monitor.run()
@@ -157,10 +158,10 @@ def test_field_rename_with_same_value_logs_as_schema_changed_only(tmp_path, monk
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     calls = iter([
-        (200, json.dumps({"fetched": "t1", "series": "ECB-DFR", "value": 1}).encode()),
-        (200, json.dumps({"fetched": "t2", "alias": "ECB-DFR", "value": 1}).encode()),
+        (200, json.dumps({"fetched": "t1", "series": "ECB-DFR", "value": 1}).encode(), False),
+        (200, json.dumps({"fetched": "t2", "alias": "ECB-DFR", "value": 1}).encode(), False),
     ])
-    monkeypatch.setattr(monitor, "_get", lambda url: next(calls))
+    monkeypatch.setattr(monitor, "_get", lambda url, timeout=None: next(calls))
 
     monitor.run()
     monitor.run()
@@ -176,10 +177,10 @@ def test_both_hashes_changing_is_its_own_state(tmp_path, monkeypatch):
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     calls = iter([
-        (200, json.dumps({"fetched": "t1", "series": "ECB-DFR", "value": 1}).encode()),
-        (200, json.dumps({"fetched": "t2", "alias": "ECB-DFR", "value": 2}).encode()),
+        (200, json.dumps({"fetched": "t1", "series": "ECB-DFR", "value": 1}).encode(), False),
+        (200, json.dumps({"fetched": "t2", "alias": "ECB-DFR", "value": 2}).encode(), False),
     ])
-    monkeypatch.setattr(monitor, "_get", lambda url: next(calls))
+    monkeypatch.setattr(monitor, "_get", lambda url, timeout=None: next(calls))
 
     monitor.run()
     monitor.run()
@@ -199,12 +200,12 @@ def test_error_blames_the_canary_route_when_proxy_index_answers(tmp_path, monkey
     monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
-    def fake_get(url):
+    def fake_get(url, timeout=None):
         # the canary path ("/x") errors; the reachability probe (anything
         # else) gets the Worker's own always-JSON help response.
         if url.endswith("/x"):
-            return 500, json.dumps({"error": "boom"}).encode()
-        return 400, json.dumps({"error": "Available series:"}).encode()
+            return 500, json.dumps({"error": "boom"}).encode(), False
+        return 400, json.dumps({"error": "Available series:"}).encode(), False
 
     monkeypatch.setattr(monitor, "_get", fake_get)
 
@@ -221,7 +222,7 @@ def test_error_blames_the_proxy_when_index_is_also_unreachable(tmp_path, monkeyp
     monkeypatch.setattr(monitor, "CANARIES", [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
 
     # Everything is unreachable, canary and reachability probe alike.
-    monkeypatch.setattr(monitor, "_get", lambda url: (None, b"connection refused"))
+    monkeypatch.setattr(monitor, "_get", lambda url, timeout=None: (None, b"connection refused", False))
 
     monitor.run()
 
@@ -241,11 +242,11 @@ def test_reachability_probe_runs_at_most_once_per_run(tmp_path, monkeypatch):
 
     probe_calls = {"n": 0}
 
-    def fake_get(url):
+    def fake_get(url, timeout=None):
         if url.endswith("/a") or url.endswith("/b"):
-            return 500, b'{"error":"boom"}'
+            return 500, b'{"error":"boom"}', False
         probe_calls["n"] += 1
-        return 400, b'{"error":"Available series:"}'
+        return 400, b'{"error":"Available series:"}', False
 
     monkeypatch.setattr(monitor, "_get", fake_get)
 
@@ -340,13 +341,133 @@ def test_run_uses_build_path_when_present(tmp_path, monkeypatch):
 
     seen_urls = []
 
-    def fake_get(url):
+    def fake_get(url, timeout=None):
         seen_urls.append(url)
-        return 200, json.dumps({"fetched": "t", "value": 1}).encode()
+        return 200, json.dumps({"fetched": "t", "value": 1}).encode(), False
 
     monkeypatch.setattr(monitor, "_get", fake_get)
     monitor.run()
     assert seen_urls == ["http://test/computed"]
+
+
+def test_get_distinguishes_read_timeout_from_other_failures(monkeypatch):
+    """The real case: entsoe's day-ahead route timed out at 30s, 200 OK'd
+    in 26.1s at 90s. That's a read timeout specifically -- not a DNS
+    failure or connection refused, which also give status=None but
+    aren't "slow", they're "absent" and retrying won't help either.
+    """
+    class FakeResponse:
+        status = 200
+        def read(self): return b"ok"
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def raises(exc):
+        def _urlopen(req, timeout=None):
+            raise exc
+        return _urlopen
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen", raises(TimeoutError("The read operation timed out")))
+    status, raw, timed_out = monitor._get("http://test/x")
+    assert status is None and timed_out is True
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen",
+                         raises(monitor.urllib.error.URLError(TimeoutError("timed out"))))
+    status, raw, timed_out = monitor._get("http://test/x")
+    assert status is None and timed_out is True
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen",
+                         raises(monitor.urllib.error.URLError(ConnectionRefusedError("refused"))))
+    status, raw, timed_out = monitor._get("http://test/x")
+    assert status is None and timed_out is False
+
+    monkeypatch.setattr(monitor.urllib.request, "urlopen", lambda req, timeout=None: FakeResponse())
+    status, raw, timed_out = monitor._get("http://test/x")
+    assert status == 200 and timed_out is False
+
+
+def test_timeout_retried_once_at_double_budget_and_success_is_not_an_error(tmp_path, monkeypatch):
+    """The exact entsoe case: first attempt times out, retry at 2x
+    succeeds. This must be treated as ordinary data -- classified into
+    one of the four states, not logged as an error -- with
+    upstream_slow noting the retry happened.
+    """
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES",
+                         [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
+
+    calls = []
+
+    def fake_get(url, timeout=None):
+        calls.append(timeout)
+        if len(calls) == 1:
+            return None, b"The read operation timed out", True
+        return 200, json.dumps({"fetched": "t", "value": 1}).encode(), False
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+    monitor.run()
+
+    assert calls == [monitor.DEFAULT_TIMEOUT, monitor.DEFAULT_TIMEOUT * 2], \
+        "retry must use double the original timeout"
+
+    log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
+    assert log_lines[0]["event"] == "first_seen"
+    assert log_lines[0]["upstream_slow"] is True
+    state = monitor.load_state()
+    assert "x" in state, "the retried response's data must be saved like any successful run"
+
+
+def test_timeout_retry_also_failing_is_still_an_error_marked_retried(tmp_path, monkeypatch):
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES",
+                         [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
+
+    def fake_get(url, timeout=None):
+        if url.endswith("/x"):
+            return None, b"The read operation timed out", True
+        return 400, b'{"error":"Available series:"}', False  # reachability probe
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+    monitor.run()
+
+    log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
+    assert log_lines[0]["event"] == "error"
+    assert log_lines[0]["retried"] is True
+    assert log_lines[0]["likely_cause"] == "canary_route"
+    assert "x" not in monitor.load_state()
+
+
+def test_definitive_error_status_is_never_retried(tmp_path, monkeypatch):
+    """A real 401/403/500 is a definitive answer -- doubling the timeout
+    wouldn't change it, so it must not cost a second call.
+    """
+    monkeypatch.setattr(monitor, "STATE_FILE", tmp_path / "state.json")
+    monkeypatch.setattr(monitor, "LOG_FILE", tmp_path / "log.ndjson")
+    monkeypatch.setattr(monitor, "CANARIES",
+                         [{"key": "x", "base": "http://test", "path": "/x", "max_silence_hint": "n/a"}])
+
+    call_count = {"n": 0}
+
+    def fake_get(url, timeout=None):
+        if url.endswith("/x"):
+            call_count["n"] += 1
+            return 401, b'{"error":"unauthorized"}', False
+        return 400, b'{"error":"Available series:"}', False
+
+    monkeypatch.setattr(monitor, "_get", fake_get)
+    monitor.run()
+    assert call_count["n"] == 1, "a definitive error status must not be retried"
+
+    log_lines = [json.loads(l) for l in (tmp_path / "log.ndjson").read_text(encoding="utf-8").strip().splitlines()]
+    assert "retried" not in log_lines[0]
+
+
+def test_entsoe_has_a_raised_timeout_measured_live():
+    entsoe = next(c for c in monitor.CANARIES if c["key"] == "entsoe-day-ahead")
+    assert entsoe["timeout"] == 90, \
+        "measured 26.1s live 2026-09-09; default 30s timed out on the first real run"
 
 
 if __name__ == "__main__":
