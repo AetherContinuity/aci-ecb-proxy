@@ -38,17 +38,46 @@ WHAT IT DOES DO
 ----------------
 For each canary route: fetch, strip the proxy's own `fetched` timestamp
 (present in every response; hashing it would hash the clock, not the
-content — same fix as traces.py's _content_hash excluding itself),
-hash what's left, and compare to the last recorded hash.
+content — same fix as traces.py's _content_hash excluding itself), and
+compute TWO independent hashes instead of one:
 
-    same hash    unchanged_runs += 1, no alarm — could be a legitimately
-                 static series (ECB-DFR) or a frozen one (DS 105's
-                 failure mode). Distinguishing the two needs the
-                 per-series cadence knowledge this file does not have.
-    diff hash    unchanged_runs resets to 0, logged as a change.
-    HTTP error   logged as an error. Does NOT touch the stored hash or
-                 unchanged_runs — a transient failure must not look
-                 like either "unchanged" or "changed".
+    schema_hash   the key structure, recursively, with every value
+                  discarded. Adding, removing, or renaming a field
+                  changes this. Growing an observation array does not.
+    value_hash    the multiset of leaf values, with every key name
+                  discarded. A field being renamed while holding the
+                  exact same value does NOT change this.
+
+The two are deliberately orthogonal — schema_hash never looks at
+values, value_hash never looks at keys — so a field rename with an
+unchanged value shows up as schema-only, not as "everything changed".
+Without that split, a single content hash conflates two unrelated
+events that need opposite reactions:
+
+    the Worker's own ECB-alias fix just deployed by this same commit
+    series: added a field. Same underlying data, new shape. A single
+    hash calls that "changed", indistinguishable from ECB actually
+    revising a rate. That's the mirror image of the Valtiokonttori
+    failure this file was built to catch: there, classification moved
+    while the shape stayed put; here, shape moves while data doesn't.
+    Same false signal, opposite direction.
+
+Comparing old vs. new on both axes gives four states, not two:
+
+    neither changed         unchanged_runs += 1 — frozen, maybe.
+                             Could be legitimately static (ECB-DFR) or
+                             a frozen feed (DS 105's failure mode).
+                             Telling those apart needs per-series
+                             cadence knowledge this file doesn't have.
+    only value changed      ordinary observation — new data point.
+    only schema changed     upstream added/removed/renamed a field.
+                             This is what BoF v3→v4, Hankeikkuna
+                             v1→v2, and ECB's ICP→HICP all were.
+    both changed            new shape AND new data in the same call —
+                             rare, worth a look either way.
+
+HTTP errors are logged separately and never touch either stored hash —
+a transient failure must not masquerade as any of the four states.
 
 Every run is appended to monitor/log.ndjson (append-only audit trail).
 Current per-canary state lives in monitor/state.json (overwritten each
@@ -105,19 +134,71 @@ def _strip_volatile(obj: Any) -> Any:
     return obj
 
 
-def content_hash(raw: bytes) -> tuple[str, bool]:
-    """sha256[:12] of the response with volatile fields stripped.
+def _schema(obj: Any) -> Any:
+    """Key structure only, recursively — every value discarded.
 
-    Not cryptographic — the goal is detecting a difference, not
-    preventing forgery. Falls back to hashing the raw bytes if the body
-    isn't valid JSON, and reports that fallback via the second value.
+    A list of dicts collapses to the UNION of keys seen across its
+    elements, not its length or per-element values: an observation
+    array growing from 12 rows to 13 is data movement, not a schema
+    change, and must not look like one. A list of scalars or an empty
+    list collapses to a fixed marker for the same reason.
+    """
+    if isinstance(obj, dict):
+        return tuple(sorted((k, _schema(v)) for k, v in obj.items()))
+    if isinstance(obj, list):
+        if not obj:
+            return "empty_list"
+        if all(isinstance(x, dict) for x in obj):
+            keys: dict[str, Any] = {}
+            for x in obj:
+                for k, v in x.items():
+                    keys.setdefault(k, _schema(v))
+            return ("list_of_dict", tuple(sorted(keys.items())))
+        if all(isinstance(x, list) for x in obj):
+            return ("list_of_list", _schema(obj[0]))
+        return "list_of_scalar"
+    return "scalar"
+
+
+def _leaf_values(obj: Any, out: list) -> None:
+    """Every leaf value, key names discarded — the mirror of _schema."""
+    if isinstance(obj, dict):
+        for v in obj.values():
+            _leaf_values(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _leaf_values(v, out)
+    else:
+        out.append(obj)
+
+
+def content_hashes(raw: bytes) -> tuple[str | None, str | None, bool]:
+    """(schema_hash, value_hash, was_json) — both sha256[:12], not cryptographic.
+
+    The goal is detecting a difference, not preventing forgery. If the
+    body isn't valid JSON, both hashes fall back to the same raw-bytes
+    hash (there's no structure to split) and was_json is False.
+    `fetched` is stripped before value_hash only — it's a key like any
+    other for schema purposes (its presence is stable; only its value
+    churns), but as a value it would defeat value_hash by changing on
+    every single call regardless of the actual data.
     """
     try:
         parsed = json.loads(raw.decode("utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError):
-        return hashlib.sha256(raw).hexdigest()[:12], False
-    canonical = json.dumps(_strip_volatile(parsed), sort_keys=True, ensure_ascii=False)
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:12], True
+        h = hashlib.sha256(raw).hexdigest()[:12]
+        return h, h, False
+
+    schema_canonical = repr(_schema(parsed))
+    schema_hash = hashlib.sha256(schema_canonical.encode("utf-8")).hexdigest()[:12]
+
+    leaves: list = []
+    _leaf_values(_strip_volatile(parsed), leaves)
+    value_canonical = json.dumps(sorted(leaves, key=lambda x: (str(type(x)), str(x))),
+                                  ensure_ascii=False)
+    value_hash = hashlib.sha256(value_canonical.encode("utf-8")).hexdigest()[:12]
+
+    return schema_hash, value_hash, True
 
 
 def _get(url: str) -> tuple[int | None, bytes]:
@@ -163,20 +244,32 @@ def run() -> int:
             # that didn't happen) or "changed" (there's nothing to compare).
             continue
 
-        h, was_json = content_hash(raw)
+        schema_hash, value_hash, was_json = content_hashes(raw)
         byte_length = len(raw)
 
-        if prev and prev.get("content_hash") == h:
-            unchanged_runs = prev.get("unchanged_runs", 0) + 1
-            event = "unchanged"
-            first_seen = prev.get("first_seen", now)
+        if prev:
+            schema_same = prev.get("schema_hash") == schema_hash
+            value_same = prev.get("value_hash") == value_hash
         else:
-            unchanged_runs = 0
-            event = "changed" if prev else "first_seen"
-            first_seen = now
+            schema_same = value_same = False
+
+        if not prev:
+            event = "first_seen"
+        elif schema_same and value_same:
+            event = "unchanged"
+        elif schema_same and not value_same:
+            event = "changed"
+        elif not schema_same and value_same:
+            event = "schema_changed"
+        else:
+            event = "changed_and_schema_changed"
+
+        unchanged_runs = (prev.get("unchanged_runs", 0) + 1) if event == "unchanged" else 0
+        first_seen = prev.get("first_seen", now) if prev else now
 
         state[key] = {
-            "content_hash": h,
+            "schema_hash": schema_hash,
+            "value_hash": value_hash,
             "was_json": was_json,
             "byte_length": byte_length,
             "unchanged_runs": unchanged_runs,
@@ -186,8 +279,8 @@ def run() -> int:
         }
         log_lines.append(json.dumps({
             "checked_at": now, "key": key, "event": event,
-            "content_hash": h, "byte_length": byte_length,
-            "unchanged_runs": unchanged_runs,
+            "schema_hash": schema_hash, "value_hash": value_hash,
+            "byte_length": byte_length, "unchanged_runs": unchanged_runs,
         }, ensure_ascii=False))
 
     STATE_FILE.parent.mkdir(exist_ok=True)
