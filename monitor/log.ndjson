@@ -1,0 +1,6 @@
+{"checked_at": "2026-09-09T02:29:38+00:00", "key": "eurostat-fi10y", "event": "first_seen", "schema_hash": "7e1bb2e0a4a5", "value_hash": "a7cc1ed91364", "byte_length": 2696, "unchanged_runs": 0}
+{"checked_at": "2026-09-09T02:29:38+00:00", "key": "ecb-dfr", "event": "first_seen", "schema_hash": "5199be11f09f", "value_hash": "f80f53764ad8", "byte_length": 83321, "unchanged_runs": 0}
+{"checked_at": "2026-09-09T02:29:38+00:00", "key": "vk-debt-interest", "event": "first_seen", "schema_hash": "4f7f374f1022", "value_hash": "8c2d47173f87", "byte_length": 5828, "unchanged_runs": 0}
+{"checked_at": "2026-09-09T02:29:38+00:00", "key": "vk-budget-interest", "event": "first_seen", "schema_hash": "6f9d912f5236", "value_hash": "073d3ddbd8f6", "byte_length": 238914, "unchanged_runs": 0}
+{"checked_at": "2026-09-09T02:29:38+00:00", "key": "fingrid-epp", "event": "error", "http_status": 500, "detail": "{\"error\":\"Fingrid EPP: 401\",\"series\":\"FINGRID-EPP\"}"}
+{"checked_at": "2026-09-09T02:29:38+00:00", "key": "eduskunta-vns8", "event": "error", "http_status": 500, "detail": "{\"error\":\"EDK API: 403\",\"series\":\"EDK-VNS82025\"}"}
