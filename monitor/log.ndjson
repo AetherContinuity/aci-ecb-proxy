@@ -82,3 +82,16 @@
 {"checked_at": "2026-09-10T10:41:22+00:00", "key": "amoc-index", "event": "unchanged", "schema_hash": "260cb5da1575", "value_hash": "4ec6fc5ebde9", "byte_length": 3112, "unchanged_runs": 5}
 {"checked_at": "2026-09-10T10:41:22+00:00", "key": "bem-index", "event": "unchanged", "schema_hash": "8d4eba395a17", "value_hash": "96dc01c9ab06", "byte_length": 1341, "unchanged_runs": 5}
 {"checked_at": "2026-09-10T10:41:22+00:00", "key": "avoimuus-terms", "event": "unchanged", "schema_hash": "ecc4bac860d1", "value_hash": "b9f8c535b40a", "byte_length": 7314, "unchanged_runs": 5}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "eurostat-fi10y", "event": "unchanged", "schema_hash": "7e1bb2e0a4a5", "value_hash": "a7cc1ed91364", "byte_length": 2696, "unchanged_runs": 7}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "ecb-dfr", "event": "unchanged", "schema_hash": "5199be11f09f", "value_hash": "13e06c2bd23e", "byte_length": 83356, "unchanged_runs": 2}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "vk-debt-interest", "event": "error", "http_status": 500, "detail": "{\"error\":\"VK-Debt interest-expenses: 403\",\"series\":\"VK-INTEREST\"}", "likely_cause": "upstream_error"}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "vk-budget-interest", "event": "error", "http_status": null, "detail": "The read operation timed out", "likely_cause": "canary_route", "retried": true}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "fingrid-ds192", "event": "changed", "schema_hash": "f401d3757af5", "value_hash": "f846de12232d", "byte_length": 674, "unchanged_runs": 0}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "eduskunta-asia", "event": "unchanged", "schema_hash": "d67f6ffeb74e", "value_hash": "6f0444feb461", "byte_length": 4869, "unchanged_runs": 6}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "entsoe-day-ahead", "event": "changed", "schema_hash": "da83fabf8df4", "value_hash": "0bdcd5d6d192", "byte_length": 39934, "unchanged_runs": 0}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "nve-week", "event": "unchanged", "schema_hash": "ee9ca44620e8", "value_hash": "4e90508a21dd", "byte_length": 302, "unchanged_runs": 3}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "transmission-ds191", "event": "changed", "schema_hash": "9532d0ef204b", "value_hash": "80f8ed19ea77", "byte_length": 18525, "unchanged_runs": 0}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "pxweb-klv", "event": "unchanged", "schema_hash": "5533ba4501a7", "value_hash": "93cbc940883c", "byte_length": 4389, "unchanged_runs": 6}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "amoc-index", "event": "unchanged", "schema_hash": "260cb5da1575", "value_hash": "4ec6fc5ebde9", "byte_length": 3112, "unchanged_runs": 6}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "bem-index", "event": "unchanged", "schema_hash": "8d4eba395a17", "value_hash": "96dc01c9ab06", "byte_length": 1341, "unchanged_runs": 6}
+{"checked_at": "2026-09-10T15:53:09+00:00", "key": "avoimuus-terms", "event": "unchanged", "schema_hash": "ecc4bac860d1", "value_hash": "b9f8c535b40a", "byte_length": 7314, "unchanged_runs": 6}
