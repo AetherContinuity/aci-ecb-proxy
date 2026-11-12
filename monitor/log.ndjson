@@ -2929,3 +2929,16 @@
 {"checked_at": "2026-11-12T00:05:14+00:00", "key": "amoc-index", "event": "unchanged", "schema_hash": "654cf7430fad", "value_hash": "526821529339", "byte_length": 3698, "unchanged_runs": 122}
 {"checked_at": "2026-11-12T00:05:14+00:00", "key": "bem-index", "event": "unchanged", "schema_hash": "8d4eba395a17", "value_hash": "bbd4898b0cc8", "byte_length": 1367, "unchanged_runs": 92}
 {"checked_at": "2026-11-12T00:05:14+00:00", "key": "avoimuus-terms", "event": "unchanged", "schema_hash": "ecc4bac860d1", "value_hash": "b9f8c535b40a", "byte_length": 7314, "unchanged_runs": 224}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "eurostat-fi10y", "event": "changed", "schema_hash": "7e1bb2e0a4a5", "value_hash": "32f1c4f70115", "byte_length": 2793, "unchanged_runs": 0}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "ecb-dfr", "event": "changed", "schema_hash": "5199be11f09f", "value_hash": "c8e5f90b6bca", "byte_length": 85503, "unchanged_runs": 0}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "vk-debt-interest", "event": "unchanged", "schema_hash": "4f7f374f1022", "value_hash": "428ea61fe8da", "byte_length": 5828, "unchanged_runs": 5}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "vk-budget-interest", "event": "unchanged", "schema_hash": "6f9d912f5236", "value_hash": "2eef7c2ca315", "byte_length": 261066, "unchanged_runs": 2}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "fingrid-ds192", "event": "changed", "schema_hash": "f401d3757af5", "value_hash": "1df4863bfea6", "byte_length": 674, "unchanged_runs": 0}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "eduskunta-asia", "event": "unchanged", "schema_hash": "d67f6ffeb74e", "value_hash": "692d4e5dd7af", "byte_length": 4895, "unchanged_runs": 138}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "entsoe-day-ahead", "event": "changed", "schema_hash": "da83fabf8df4", "value_hash": "4494b00ee717", "byte_length": 39840, "unchanged_runs": 0}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "nve-week", "event": "unchanged", "schema_hash": "39ab3762cc49", "value_hash": "62226e58f164", "byte_length": 491, "unchanged_runs": 2}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "transmission-ds191", "event": "changed", "schema_hash": "9532d0ef204b", "value_hash": "bd5eb8c6e81f", "byte_length": 18529, "unchanged_runs": 0}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "pxweb-klv", "event": "unchanged", "schema_hash": "5533ba4501a7", "value_hash": "029926ada953", "byte_length": 4407, "unchanged_runs": 37}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "amoc-index", "event": "unchanged", "schema_hash": "654cf7430fad", "value_hash": "526821529339", "byte_length": 3698, "unchanged_runs": 123}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "bem-index", "event": "unchanged", "schema_hash": "8d4eba395a17", "value_hash": "bbd4898b0cc8", "byte_length": 1367, "unchanged_runs": 93}
+{"checked_at": "2026-11-12T14:40:49+00:00", "key": "avoimuus-terms", "event": "unchanged", "schema_hash": "ecc4bac860d1", "value_hash": "b9f8c535b40a", "byte_length": 7314, "unchanged_runs": 225}
